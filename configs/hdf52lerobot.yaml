@@ -1,0 +1,68 @@
+# hdf52lerobot: how a recording directory maps onto a LeRobot v3.0 dataset.
+#
+# `streams` classifies files by name; `state_layout` decides which of them get
+# concatenated into observation.state, in order. Both are the extension points:
+# a new camera is one more `video` rule, and a head tracker becomes part of the
+# state by adding a `pose` rule plus an entry in state_layout (which is how the
+# 29-dim XTac-UMI layout differs from the 20-dim TacCap one).
+
+fps: 20
+robot_type: bi_taccap_gripper
+task: Converted from UMI HDF5 recording
+
+# Tracker rotation component order: wxyz or xyzw.
+quat_order: wxyz
+
+# index   = frame i of every stream belongs to trigger i (all streams equal length)
+# nearest = re-pair by real timestamps (used automatically when lengths differ)
+pair: index
+
+# Hard reject / soft report thresholds on the distance between a sample and the
+# master tick it serves. 1.5 frames (the mcap2lerobot limit) is too tight here:
+# the rig occasionally stalls a device for a couple of hundred milliseconds.
+max_sync_gap_frames: 3.0
+warn_sync_gap_frames: 1.5
+
+master_clock: left_tcp
+state_layout:
+  - left_tcp
+  - left_gripper
+  - right_tcp
+  - right_gripper
+
+streams:
+  # Head camera: image only, no pose (this rig has no head tracker).
+  - pattern: '^head_.*_mvs_mono_.*\.mkv$'
+    kind: video
+    key: head
+
+  - pattern: '^(?P<side>left|right)_umi_.*_mvs_mono_.*\.mkv$'
+    kind: video
+    key: '{side}_wrist'
+
+  - pattern: '^(?P<side>left|right)_umi_.*_tactile_(?P<pos>left|right)_.*\.mkv$'
+    kind: video
+    key: '{side}_tactile_{pos}'
+
+  - pattern: '^(?P<side>left|right)_umi_.*_tracker_.*\.hdf5$'
+    kind: pose
+    key: '{side}_tcp'
+
+  # The `lo`/`hi` groups are the jaw calibration bounds embedded in the file
+  # name; hi is fully open, which normalizes to gripper.pos = 1.
+  - pattern: '^(?P<side>left|right)_umi_.*_openv2_(?P<lo>[\d.]+)_(?P<hi>[\d.]+)\.hdf5$'
+    kind: gripper
+    key: '{side}_gripper'
+
+# Output video encoding. Sources arrive with 200+ frame GOPs, which makes
+# LeRobot's random-access reads crawl; TacCap sits near 57.
+vcodec: libx264
+pix_fmt: yuv420p
+crf: 23
+gop: 30
+preset: veryfast
+workers: 0
+
+chunks_size: 1000
+data_files_size_in_mb: 100
+video_files_size_in_mb: 200

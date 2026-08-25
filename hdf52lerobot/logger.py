@@ -1,7 +1,5 @@
-"""Unified logging configuration, mirroring ``lerobot2mcap.logger``.
+"""Unified logging configuration.
 
-Kept as a local copy so this package stays importable on its own (the two
-converters are independent entry points that happen to live in one repo).
 Falls back to the stdlib when spdlog is unavailable, so the converter still
 runs in a bare environment.
 """

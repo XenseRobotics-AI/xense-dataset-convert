@@ -19,9 +19,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The project's own dependencies are deliberately NOT installed: pyproject
-      # pins lerobot==0.4.1, which drags in a full torch stack for a job that only
-      # needs to parse the source. The checks below are import-free.
+      # The project's own dependencies are deliberately NOT installed: the checks
+      # below are import-free.
       - name: Install tools
         run: pip install --upgrade pip ruff
 
@@ -32,7 +31,7 @@ jobs:
         run: ruff check --select E9,F63,F7,F82 .
 
       - name: Syntax check
-        run: python -m compileall -q lerobot2mcap hdf52lerobot tests
+        run: python -m compileall -q hdf52lerobot tests
 
   test:
     runs-on: ubuntu-latest
@@ -43,9 +42,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Only hdf52lerobot's dependencies: it writes the LeRobot v3.0 layout itself,
-      # so its suite runs without the torch stack that lerobot==0.4.1 would pull in.
-      # The lerobot2mcap tests still need a real dataset on disk and stay excluded.
+      # hdf52lerobot writes the LeRobot v3.0 layout itself, so the suite runs
+      # without a lerobot install (and without its torch stack).
       - name: Install test dependencies
         run: pip install --upgrade pip pytest h5py numpy pandas pyarrow PyYAML "av==15.1.0"
 

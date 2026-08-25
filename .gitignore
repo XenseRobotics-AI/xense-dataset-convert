@@ -1,7 +1,5 @@
 # Data and output
 data/
-mcap_output/
-mcap_output_*/
 
 # Python
 __pycache__/

@@ -1,21 +1,19 @@
 [project]
-name = "lerobot2mcap"
+name = "hdf52lerobot"
 version = "0.1.0"
-description = "Convert LeRobot datasets to MCAP format with automatic configuration generation from dataset metadata"
+description = "Convert raw UMI-rig HDF5/MKV recordings into a LeRobot v3.0 dataset"
 readme = "README.md"
 requires-python = ">=3.10"
+# No lerobot at runtime: the v3.0 layout is written directly, so only the
+# storage/codec libraries are needed.
 dependencies = [
-  "lerobot==0.4.1",
-  "tabular2mcap[protobuf]==0.1.12",
   "av==15.1.0",
-  "spdlog>=2.0.0",
-  # hdf52lerobot writes the LeRobot v3.0 layout itself, so it needs the storage
-  # libraries but not lerobot at runtime.
   "h5py>=3.8",
   "numpy>=1.24",
   "pandas>=2.0",
   "pyarrow>=14",
   "PyYAML>=6.0",
+  "spdlog>=2.0.0",
 ]
 
 [project.urls]
@@ -24,17 +22,13 @@ Repository = "https://github.com/XenseRobotics-AI/lerobot2mcap"
 Issues = "https://github.com/XenseRobotics-AI/lerobot2mcap/issues"
 
 [project.scripts]
-lerobot2mcap = "lerobot2mcap:main"
 hdf52lerobot = "hdf52lerobot.cli:main"
 
 [tool.setuptools]
-packages = ["lerobot2mcap", "hdf52lerobot"]
+packages = ["hdf52lerobot"]
 
 [tool.setuptools.package-data]
 "*" = ["../configs/*.yaml"]
 
 [tool.uv]
 package = true
-
-[dependency-groups]
-hardware = ["lerobot[feetech]>=0.3.3"]

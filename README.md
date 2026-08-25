@@ -397,9 +397,10 @@ land at ~118 MB.
 
 ### Conversion conventions
 
-- **Rotation**: the tracker's quaternion (`wxyz` by default, `--quat-order` to
-  switch) becomes the 6D representation LeRobot's `bi_taccap_gripper` uses —
-  `r1..r3` is the first column of the rotation matrix, `r4..r6` the second.
+- **Rotation**: the tracker file's 7 columns are `[x, y, z, qx, qy, qz, qw]`, so
+  the quaternion is read as `xyzw` (`--quat-order wxyz` for a rig that stores the
+  scalar first). It becomes the 6D representation LeRobot's `bi_taccap_gripper`
+  uses — `r1..r3` is the first column of the rotation matrix, `r4..r6` the second.
 - **Gripper**: `clip((v - lo) / (hi - lo), 0, 1)` with the calibration bounds read
   from the file name; `hi` is fully open, so `1.0` = open, matching TacCap.
 - **Action**: `action[t] = state[t+1]`, with the final frame repeating its own state.

@@ -99,8 +99,10 @@ class ConverterConfig:
     robot_type: str = "bi_taccap_gripper"
     task: str = "Converted from UMI HDF5 recording"
 
-    quat_order: str = "wxyz"
-    """Component order of the tracker's 4 rotation columns."""
+    quat_order: str = "xyzw"
+    """Component order of the tracker's 4 rotation columns. The UMI rig writes
+    ``[x, y, z, qx, qy, qz, qw]``, i.e. ``xyzw`` (confirmed by the recording
+    team); ``wxyz`` is kept for rigs that store the scalar first."""
 
     pair: str = "index"
     """``index`` pairs frame i of every stream with frame i of the master clock

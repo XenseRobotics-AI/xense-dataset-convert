@@ -11,7 +11,8 @@ robot_type: bi_taccap_gripper
 task: Converted from UMI HDF5 recording
 
 # Tracker rotation component order: wxyz or xyzw.
-quat_order: wxyz
+# The UMI rig's 7 columns are [x, y, z, qx, qy, qz, qw] -> xyzw.
+quat_order: xyzw
 
 # index   = frame i of every stream belongs to trigger i (all streams equal length)
 # nearest = re-pair by real timestamps (used automatically when lengths differ)

@@ -68,8 +68,9 @@ def _make_episode(directory: Path, frames: int = FRAMES, jitter: float = 0.004) 
 
     for side, tracker in (("left", "LHR-AAAA"), ("right", "LHR-BBBB")):
         angles = np.linspace(0.0, 0.6, frames)
+        # Same column order as the rig: [qx, qy, qz, qw].
         quaternions = np.stack(
-            [np.cos(angles / 2), np.sin(angles / 2), np.zeros(frames), np.zeros(frames)], axis=1
+            [np.sin(angles / 2), np.zeros(frames), np.zeros(frames), np.cos(angles / 2)], axis=1
         )
         positions = np.stack([angles, -angles, np.full(frames, 0.5)], axis=1)
         _write_hdf5(
@@ -337,7 +338,7 @@ def test_shipped_config_loads():
     )
     assert config.fps == 20
     assert config.pair == "index"
-    assert config.quat_order == "wxyz"
+    assert config.quat_order == "xyzw"
     assert config.robot_type == "bi_taccap_gripper"
     assert config.master_clock == "left_tcp"
     assert config.state_layout == ("left_tcp", "left_gripper", "right_tcp", "right_gripper")

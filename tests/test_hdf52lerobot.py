@@ -339,7 +339,7 @@ def test_shipped_config_loads():
     assert config.fps == 20
     assert config.pair == "index"
     assert config.quat_order == "xyzw"
-    assert config.robot_type == "bi_taccap_gripper"
+    assert config.robot_type == "bi_rtc_gripper"
     assert config.master_clock == "left_tcp"
     assert config.state_layout == ("left_tcp", "left_gripper", "right_tcp", "right_gripper")
     assert config.warn_sync_gap_frames < config.max_sync_gap_frames

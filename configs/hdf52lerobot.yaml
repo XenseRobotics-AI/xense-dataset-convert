@@ -7,7 +7,7 @@
 # 29-dim XTac-UMI layout differs from the 20-dim TacCap one).
 
 fps: 20
-robot_type: bi_taccap_gripper
+robot_type: bi_rtc_gripper
 task: Converted from UMI HDF5 recording
 
 # Tracker rotation component order: wxyz or xyzw.

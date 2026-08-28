@@ -45,6 +45,43 @@ satisfies `>=0.5.1`. The `<0.6` cap keeps a fork-less environment on the same
 Only `lerobot2mcap` and `lerobot2zarr` import lerobot, and between them they
 touch exactly one symbol — `lerobot.datasets.lerobot_dataset.LeRobotDataset`.
 
+## Unified Python interface
+
+For calling from another system, `xense_dataset_convert` puts one entry point in
+front of all four. The converter packages are untouched underneath; this layer
+only reconciles interfaces that differ in shape, in what they accept, and in how
+they report failure.
+
+```python
+from xense_dataset_convert import convert, available, Format
+
+available()
+# [(Format.LEROBOT, Format.MCAP), (Format.LEROBOT, Format.ZARR),
+#  (Format.MCAP, Format.LEROBOT), (Format.UMI_HDF5, Format.LEROBOT)]
+
+result = convert(Format.UMI_HDF5, Format.LEROBOT,
+                 inputs="/data/SuHang", output="/data/SuHang_lerobot",
+                 task="pick up the cup")
+result.output_path     # Path("/data/SuHang_lerobot")
+result.details         # {"total_episodes": 2, "total_frames": 1472}
+```
+
+`Format` is an enum; build one from a config value with `Format(cfg["src"])`.
+Options are forwarded to the underlying converter, and an unrecognised name
+raises with the accepted spellings rather than being ignored — these usually
+come from a config file, where a typo would otherwise pass silently.
+
+`available()` and a conversion that does not need lerobot import nothing that
+does: the registry resolves adapters lazily, so an HDF5 → LeRobot run never
+loads torch. `details` carries `total_episodes` / `total_frames` for LeRobot
+targets, read back from `meta/info.json`; no converter returns counts directly,
+so the key is absent rather than guessed when the metadata cannot be read.
+
+One gap: `video_preset` and `video_crf` are not accepted for LeRobot → MCAP.
+`lerobot2mcap` reads them from module-level globals rather than taking them as
+arguments, so honouring them here would mean mutating process-wide state. Set
+`lerobot2mcap.VIDEO_ENCODER_CRF` yourself, or use that package's CLI.
+
 ## The converters
 
 ### `lerobot2mcap` — LeRobot → MCAP

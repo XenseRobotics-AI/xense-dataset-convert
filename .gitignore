@@ -1,12 +1,14 @@
 # Data and output
 data/
-mcap_output/
-mcap_output_*/
+mcap_output*/
+*.mcap
 
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 .venv/
 venv/
 

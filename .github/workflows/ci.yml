@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
 
       # The project's own dependencies are deliberately NOT installed: pyproject
-      # pins lerobot==0.4.1, which drags in a full torch stack for a job that only
+      # requires lerobot, which drags in a full torch stack for a job that only
       # needs to parse the source. The checks below are import-free.
       - name: Install tools
         run: pip install --upgrade pip ruff
@@ -32,8 +32,31 @@ jobs:
         run: ruff check --select E9,F63,F7,F82 .
 
       - name: Syntax check
-        run: python -m compileall -q lerobot2mcap tests
+        run: >
+          python -m compileall -q
+          lerobot2mcap lerobot2zarr mcap2lerobot hdf52lerobot tests
 
-      # Note: tests/ holds a standalone MCAP validator and an encoder benchmark,
-      # both of which need a real dataset on disk — there is no unit-test suite to
-      # run here yet. Add a `pytest` step when one exists.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only the libraries the suites actually touch, not the project itself: all
+      # three converters under test import their heavy dependencies lazily inside
+      # functions, so nothing here needs lerobot (and therefore torch). spdlog is
+      # the exception -- lerobot2zarr/logger.py imports it at module level, so the
+      # zarr suite cannot even be collected without it.
+      - name: Install test dependencies
+        run: >
+          pip install --upgrade pip pytest numpy pandas pyarrow PyYAML h5py
+          "av>=15.0.0,<16.0.0" "zarr>=2.18,<3" "numcodecs>=0.12,<0.16" "spdlog>=2.0.0"
+
+      # lerobot2mcap has no unit suite: tests/ carries a standalone MCAP validator
+      # and an encoder benchmark, both of which need a real dataset on disk.
+      # The three suites below cover lerobot2zarr, mcap2lerobot and hdf52lerobot.
+      - name: Test
+        run: pytest tests/ -q

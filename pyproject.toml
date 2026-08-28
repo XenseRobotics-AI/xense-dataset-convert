@@ -1,14 +1,39 @@
+# None of the four packages declared a build backend before they were merged,
+# which left the backend up to whatever the installer defaulted to. Naming it
+# explicitly is what lets `pip install -e .` use PEP 660 editable installs --
+# though a pip old enough to predate that (22.x) still refuses either way.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "lerobot2mcap"
-version = "0.1.0"
-description = "Convert LeRobot datasets to MCAP format with automatic configuration generation from dataset metadata"
+name = "xense-data-convert"
+version = "0.2.0"
+description = "Robot dataset format converters: LeRobot <-> MCAP, LeRobot -> Zarr, raw UMI HDF5 -> LeRobot"
 readme = "README.md"
 requires-python = ">=3.10"
+
+# The union of what the four converters need. Nothing here conflicts: the pins
+# the individual packages carried (lerobot==0.4.1, av==15.1.0) already agreed.
+#
+# Note that only lerobot2mcap and lerobot2zarr import lerobot; mcap2lerobot and
+# hdf52lerobot write the v3.0 layout themselves. Installing this distribution
+# still pulls lerobot's torch stack for all four -- a deliberate trade for a
+# single, no-extras install.
 dependencies = [
   "lerobot==0.4.1",
   "tabular2mcap[protobuf]==0.1.12",
   "av==15.1.0",
   "spdlog>=2.0.0",
+  "numpy>=1.24",
+  "zarr>=2.18,<3",
+  "numcodecs>=0.12,<0.16",
+  "mcap>=1.3.0",
+  "mcap-ros2-support>=0.5.5",
+  "h5py>=3.8",
+  "pandas>=2.0",
+  "pyarrow>=14",
+  "PyYAML>=6.0",
 ]
 
 [project.urls]
@@ -18,9 +43,12 @@ Issues = "https://github.com/XenseRobotics-AI/lerobot2mcap/issues"
 
 [project.scripts]
 lerobot2mcap = "lerobot2mcap:main"
+lerobot2zarr = "lerobot2zarr.zarr_cli:main"
+mcap2lerobot = "mcap2lerobot.cli:main"
+hdf52lerobot = "hdf52lerobot.cli:main"
 
 [tool.setuptools]
-packages = ["lerobot2mcap"]
+packages = ["lerobot2mcap", "lerobot2zarr", "mcap2lerobot", "hdf52lerobot"]
 
 [tool.setuptools.package-data]
 "*" = ["../configs/*.yaml"]

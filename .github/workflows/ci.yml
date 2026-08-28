@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
 
       # The project's own dependencies are deliberately NOT installed: pyproject
-      # pins lerobot==0.4.1, which drags in a full torch stack for a job that only
+      # requires lerobot, which drags in a full torch stack for a job that only
       # needs to parse the source. The checks below are import-free.
       - name: Install tools
         run: pip install --upgrade pip ruff
@@ -53,7 +53,7 @@ jobs:
       - name: Install test dependencies
         run: >
           pip install --upgrade pip pytest numpy pandas pyarrow PyYAML h5py
-          "av==15.1.0" "zarr>=2.18,<3" "numcodecs>=0.12,<0.16" "spdlog>=2.0.0"
+          "av>=15.0.0,<16.0.0" "zarr>=2.18,<3" "numcodecs>=0.12,<0.16" "spdlog>=2.0.0"
 
       # lerobot2mcap has no unit suite: tests/ carries a standalone MCAP validator
       # and an encoder benchmark, both of which need a real dataset on disk.

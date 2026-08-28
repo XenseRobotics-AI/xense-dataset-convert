@@ -13,8 +13,8 @@ does the transcoding.
 ## Installation
 
 ```bash
-git clone https://github.com/XenseRobotics-AI/lerobot2mcap.git
-cd lerobot2mcap
+git clone https://github.com/XenseRobotics-AI/xense-dataset-convert.git
+cd xense-dataset-convert
 pip install -e .
 
 hdf52lerobot --help

@@ -20,8 +20,8 @@ Convert LeRobot datasets to MCAP format with automatic configuration generation 
 
 ```bash
 # Clone the repository
-git clone https://github.com/XenseRobotics-AI/lerobot2mcap.git
-cd lerobot2mcap
+git clone https://github.com/XenseRobotics-AI/xense-dataset-convert.git
+cd xense-dataset-convert
 
 # Install in editable mode
 pip install -e .

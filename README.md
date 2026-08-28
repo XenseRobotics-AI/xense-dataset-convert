@@ -1,4 +1,4 @@
-# xense-data-convert
+# xense-dataset-convert
 
 Robot dataset format converters, one package per direction. Built to be vendored
 into a larger system as a git submodule, so all four live on `main` rather than
@@ -16,14 +16,34 @@ on separate branches.
 One install provides all four commands:
 
 ```bash
-git clone https://github.com/XenseRobotics-AI/lerobot2mcap.git
-cd lerobot2mcap
+git clone https://github.com/XenseRobotics-AI/xense-dataset-convert.git
+cd xense-dataset-convert
 pip install -e .
 ```
 
-Dependencies are not split into extras, so this pulls `lerobot==0.4.1` and its
+Dependencies are not split into extras, so this pulls `lerobot` and its
 torch stack even if you only intend to use `hdf52lerobot` (whose own code never
 imports lerobot — it writes the v3.0 layout directly).
+
+### Environment alignment
+
+Pins track [`xense-taccap-lerobot`](https://github.com/Vertax42/xense-taccap-lerobot),
+the lerobot fork (`0.5.1+xtac.0.0.6`) this is meant to be installed alongside:
+
+| | Here | Fork |
+|---|---|---|
+| Python | `>=3.12` | `>=3.12` |
+| lerobot | `>=0.5.1,<0.6` | *is* `0.5.1+xtac.0.0.6` |
+| av | `>=15.0.0,<16.0.0` | `>=15.0.0,<16.0.0` |
+| numpy | `>=1.26.4` | `>=1.26.4` |
+
+Installing into an environment that already has the fork leaves it in place: a
+local-version segment sorts above the plain release, so `0.5.1+xtac.0.0.6`
+satisfies `>=0.5.1`. The `<0.6` cap keeps a fork-less environment on the same
+0.5.x line rather than resolving to the 0.6.x already published on PyPI.
+
+Only `lerobot2mcap` and `lerobot2zarr` import lerobot, and between them they
+touch exactly one symbol — `lerobot.datasets.lerobot_dataset.LeRobotDataset`.
 
 ## The converters
 

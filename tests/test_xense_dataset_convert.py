@@ -371,3 +371,27 @@ def test_mcap_option_names_match_the_config_it_builds():
 
     fields = set(ConverterConfig.__dataclass_fields__)
     assert CONFIG_OPTIONS == fields, CONFIG_OPTIONS ^ fields
+
+
+def test_lerobot2mcap_looks_up_the_distribution_by_its_real_name():
+    """Renaming the distribution must not break `import lerobot2mcap`.
+
+    Its __version__ comes from importlib.metadata at module level, so a name
+    that no longer matches pyproject raises PackageNotFoundError on import --
+    which nothing else here would catch, since CI never installs the project
+    and lerobot2mcap has no suite of its own.
+    """
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    pyproject = (root / "pyproject.toml").read_text()
+    distribution = re.search(r'^name = "([^"]+)"', pyproject, re.M).group(1)
+
+    source = (root / "lerobot2mcap" / "__init__.py").read_text()
+    looked_up = re.findall(r'version\("([^"]+)"\)', source)
+
+    assert looked_up, "lerobot2mcap no longer looks up a distribution version"
+    assert set(looked_up) == {distribution}, (
+        f"lerobot2mcap asks importlib.metadata for {looked_up}, "
+        f"but the distribution is named {distribution!r}"
+    )

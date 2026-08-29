@@ -1,7 +1,7 @@
 """LeRobot to MCAP converter."""
 
 import argparse
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -340,7 +340,14 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 from .converter import LeRobotConverter
 
-__version__ = version("lerobot2mcap")
+try:
+    # The distribution is xense-dataset-convert; this package is one of the four
+    # it ships. Looked up by that name rather than this module's, and tolerant of
+    # not being installed at all, since the repo is also used as a submodule that
+    # a consumer may simply put on sys.path.
+    __version__ = version("xense-dataset-convert")
+except PackageNotFoundError:
+    __version__ = "unknown"
 
 from .logger import get_logger
 

@@ -125,7 +125,7 @@ and current limitations.
 ### `hdf52lerobot` — UMI HDF5/MKV → LeRobot v3
 
 Converts the raw per-stream HDF5/MKV recordings from the bimanual handheld UMI
-rig into a LeRobot v3.0 dataset, tagged `robot_type: bi_rtc_gripper`. No
+rig into a LeRobot v3.0 dataset, tagged `robot_type: bi_rdt_gripper`. No
 `lerobot` install is needed at runtime: the layout is written directly and PyAV
 does the transcoding.
 

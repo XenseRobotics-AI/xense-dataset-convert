@@ -4,7 +4,7 @@ Convert the raw per-stream HDF5/MKV recordings written by the bimanual handheld
 UMI rig into a [LeRobot](https://github.com/huggingface/lerobot) **v3.0** dataset,
 structurally identical to the `TacCap` datasets (20-dim `observation.state`/
 `action`, videos aggregated per camera key) but tagged `robot_type:
-bi_rtc_gripper`, since the rig's gripper and planar tactile sensors are
+bi_rdt_gripper`, since the rig's gripper and planar tactile sensors are
 different hardware.
 
 No `lerobot` install is needed: the v3.0 layout is written directly, and PyAV

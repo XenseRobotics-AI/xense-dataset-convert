@@ -279,11 +279,11 @@ def test_umi_hdf5_passes_overrides_and_overwrite_through(monkeypatch, tmp_path):
         ["/data/ep0", "/data/ep1"],
         tmp_path / "out",
         task="pick up the cup",
-        robot_type="bi_rtc_gripper",
+        robot_type="bi_rdt_gripper",
         overwrite=True,
     )
 
-    assert seen["overrides"] == {"task": "pick up the cup", "robot_type": "bi_rtc_gripper"}
+    assert seen["overrides"] == {"task": "pick up the cup", "robot_type": "bi_rdt_gripper"}
     assert seen["overwrite"] is True
     assert seen["inputs"] == [Path("/data/ep0"), Path("/data/ep1")]
     # The shipped config does not exist in the test environment, so it is skipped.

@@ -90,7 +90,7 @@ class ConverterConfig:
 
     Defaults describe the SuHang UMI recordings and produce a dataset
     structurally identical to ``TacCap`` -- same 20-dim state layout, same v3.0
-    codebase version -- but tagged ``bi_rtc_gripper``, because the rig's gripper
+    codebase version -- but tagged ``bi_rdt_gripper``, because the rig's gripper
     and its planar tactile sensors are different hardware.
     """
 
@@ -98,7 +98,7 @@ class ConverterConfig:
     """Declared dataset frame rate. Not inferred: the recorder's per-device
     arrival timestamps jitter enough that a median-based estimate is unstable."""
 
-    robot_type: str = "bi_rtc_gripper"
+    robot_type: str = "bi_rdt_gripper"
     task: str = "Converted from UMI HDF5 recording"
 
     quat_order: str = "xyzw"

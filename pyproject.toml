@@ -58,7 +58,14 @@ mcap2lerobot = "mcap2lerobot.cli:main"
 hdf52lerobot = "hdf52lerobot.cli:main"
 
 [tool.setuptools]
-packages = ["lerobot2mcap", "lerobot2zarr", "mcap2lerobot", "hdf52lerobot"]
+packages = [
+  "lerobot2mcap",
+  "lerobot2zarr",
+  "mcap2lerobot",
+  "hdf52lerobot",
+  "xense_dataset_convert",
+  "xense_dataset_convert.adapters",
+]
 
 [tool.setuptools.package-data]
 "*" = ["../configs/*.yaml"]

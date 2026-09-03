@@ -175,6 +175,7 @@ class Hdf5ToLeRobotConverter:
         positions = sample_positions(sync.length)
 
         placements: dict[str, VideoPlacement] = {}
+        samples: dict[str, list[np.ndarray]] = {}
         workers = self.config.workers or max(1, (os.cpu_count() or 2) // 2)
         with ThreadPoolExecutor(max_workers=min(workers, len(episode.videos) or 1)) as pool:
             futures = {
@@ -194,20 +195,23 @@ class Hdf5ToLeRobotConverter:
                     from_timestamp=result.from_timestamp,
                     to_timestamp=result.to_timestamp,
                 )
-                accumulator.add_images(feature, result.samples)
+                samples[feature] = result.samples
 
         record = writer.add_episode(states, actions, self.config.task, placements)
         length = record.length
-        accumulator.add_numeric("observation.state", states)
-        accumulator.add_numeric("action", actions)
-        accumulator.add_numeric("timestamp", np.arange(length) / self.config.fps)
-        accumulator.add_numeric("frame_index", np.arange(length))
-        accumulator.add_numeric("episode_index", np.full(length, record.episode_index))
-        accumulator.add_numeric(
-            "index", np.arange(record.dataset_from_index, record.dataset_to_index)
-        )
-        accumulator.add_numeric(
-            "task_index", np.full(length, writer.task_index(self.config.task))
+        # The same columns the parquet rows carry, so the per-episode block and
+        # stats.json describe exactly what was written.
+        record.stats = accumulator.add_episode(
+            numeric={
+                "observation.state": states,
+                "action": actions,
+                "timestamp": np.arange(length) / self.config.fps,
+                "frame_index": np.arange(length),
+                "episode_index": np.full(length, record.episode_index),
+                "index": np.arange(record.dataset_from_index, record.dataset_to_index),
+                "task_index": np.full(length, writer.task_index(self.config.task)),
+            },
+            images=samples,
         )
 
 

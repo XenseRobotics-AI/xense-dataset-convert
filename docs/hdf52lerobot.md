@@ -58,7 +58,7 @@ Useful flags: `--config` (rule file, default
 │   ├── info.json                          # fps, robot_type, features
 │   ├── stats.json                         # min/max/mean/std/count per feature
 │   ├── tasks.parquet
-│   └── episodes/chunk-000/file-000.parquet
+│   └── episodes/chunk-000/file-000.parquet  # per-episode ranges + stats/* blocks
 ├── data/chunk-000/file-000.parquet        # episodes aggregated, rolls at 100 MB
 └── videos/observation.images.<key>/chunk-000/file-000.mp4   # rolls at 200 MB
 ```

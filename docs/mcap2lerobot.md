@@ -2,9 +2,9 @@
 
 Convert ROS2 MCAP episode files into a LeRobot v3.0 dataset.
 
-This branch currently targets MCAP files produced by this repository's former
-`lerobot2mcap` implementation. It intentionally does not try to support every
-robot or arbitrary ROS topic layout yet.
+This converter targets the MCAP files written by this repository's
+`lerobot2mcap`. It intentionally does not try to support every robot or
+arbitrary ROS topic layout yet.
 
 ## Supported MCAP layout
 
@@ -31,8 +31,8 @@ maximum gap.
 pip install -e .
 ```
 
-`ffmpeg` must be available because LeRobot uses it to encode the generated v3
-video files.
+The dataset is written through lerobot's own `LeRobotDataset` API, which
+encodes video with PyAV; no `ffmpeg` binary is needed for this direction.
 
 ## Usage
 

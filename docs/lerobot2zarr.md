@@ -20,26 +20,14 @@ assuming a fixed camera layout, robot type, or number of cameras.
 
 ## Installation
 
-This implementation currently lives on the `feature/lerobot2zarr` branch of
-the `XenseRobotics-AI/xense-dataset-convert` GitHub repository. The Python package and
-CLI are named `lerobot2zarr`; pushing this branch does not rename the GitHub
-repository.
+The package and CLI are named `lerobot2zarr`; they ship with the repository's
+single install (see the top-level README for the conda recipe):
 
 ```bash
-git clone --branch feature/lerobot2zarr \
-  https://github.com/XenseRobotics-AI/xense-dataset-convert.git
+git clone https://github.com/XenseRobotics-AI/xense-dataset-convert.git
 cd xense-dataset-convert
 python -m pip install -e .
 lerobot2zarr --help
-```
-
-If the repository is already cloned, switch to the feature branch instead:
-
-```bash
-cd xense-dataset-convert
-git fetch origin
-git switch feature/lerobot2zarr
-python -m pip install -e .
 ```
 
 ## Usage

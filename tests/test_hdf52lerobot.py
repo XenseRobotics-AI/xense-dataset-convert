@@ -28,7 +28,8 @@ from hdf52lerobot.geometry import (  # noqa: E402
 )
 from hdf52lerobot.source import read_episode  # noqa: E402
 from hdf52lerobot.stats import estimate_num_samples  # noqa: E402
-from hdf52lerobot.sync import build_sync, nearest_indices  # noqa: E402
+from hdf52lerobot.source import GripperStream, PoseStream, SourceEpisode, VideoStream  # noqa: E402
+from hdf52lerobot.sync import build_sync, nearest_indices, uniform_grid  # noqa: E402
 
 FPS = 20
 FRAMES = 12
@@ -192,6 +193,55 @@ def test_sync_rejects_a_stream_that_drifts_too_far(tmp_path: Path):
     config = ConverterConfig(fps=FPS)
     with pytest.raises(ValueError, match="not synchronized"):
         build_sync(read_episode(directory, config), config)
+
+
+def _stalling_episode(tmp_path: Path) -> SourceEpisode:
+    """A recorder loop at 30 Hz that stalls twice, every stream stamped a few ms later."""
+    base = 1_700_000_000.0
+    intervals = [0.033] * 6 + [0.150] + [0.033] * 5 + [0.100] + [0.033] * 6
+    master = base + np.concatenate([[0.0], np.cumsum(intervals)])
+    n = len(master)
+    poses = np.zeros((n, 7)); poses[:, 6] = 1.0; poses[:, 0] = np.arange(n)  # x counts iterations
+    episode = SourceEpisode(path=tmp_path / "stalling")
+    for side, offset in (("left", 0.0), ("right", 0.004)):
+        episode.poses[f"{side}_tcp"] = PoseStream(f"{side}_tcp", tmp_path / f"{side}.hdf5", master + offset, poses.copy())
+        episode.grippers[f"{side}_gripper"] = GripperStream(
+            f"{side}_gripper", tmp_path / f"{side}_g.hdf5", master + offset + 0.002, np.linspace(0, 100, n), 0.0, 100.0
+        )
+    episode.videos["head"] = VideoStream("head", tmp_path / "head.mkv", master + 0.006, 64, 48)
+    return episode
+
+
+def test_grid_mode_resamples_iterations_onto_a_uniform_20hz_grid(tmp_path: Path):
+    episode = _stalling_episode(tmp_path)
+    config = ConverterConfig(fps=20, pair="grid", warn_sync_gap_frames=2.0, max_sync_gap_frames=3.0)
+    report = build_sync(episode, config)
+
+    master = episode.poses["left_tcp"].timestamps
+    assert report.mode == "grid"
+    assert report.length == int(np.floor((master[-1] - master[0]) * 20)) + 1
+    assert np.allclose(uniform_grid(master, 20), master[0] + np.arange(report.length) / 20)
+    # Every tick took the iteration nearest to it; the stalls show up as repeats.
+    ticks = master[0] + np.arange(report.length) / 20
+    expected = np.array([int(np.argmin(np.abs(master - t))) for t in ticks])
+    assert report.indices_for("left_tcp").tolist() == expected.tolist()
+    assert report.duplicated >= 1 and report.dropped >= 1
+    assert report.tick_timestamps.tolist() == master[expected].tolist()
+    assert np.abs(report.warp_s).max() <= 0.075 + 1e-9
+    # Streams still pair by iteration, so all of them follow the same index list.
+    for key in ("right_tcp", "left_gripper", "head"):
+        assert report.indices_for(key).tolist() == expected.tolist()
+    assert "duplicated=" in report.describe()[0] and "grid 20Hz" in report.describe()[-1]
+
+
+def test_grid_mode_rejects_a_stall_longer_than_the_limit(tmp_path: Path):
+    episode = _stalling_episode(tmp_path)
+    master = episode.poses["left_tcp"].timestamps
+    master[7:] += 0.4  # one 550 ms hole in the master clock
+    for stream in episode.all_streams().values():
+        stream.timestamps[7:] += 0.0 if stream.key == "left_tcp" else 0.4
+    with pytest.raises(ValueError, match="not synchronized"):
+        build_sync(episode, ConverterConfig(fps=20, pair="grid", max_sync_gap_frames=3.0))
 
 
 def test_missing_state_stream_is_rejected(tmp_path: Path):
@@ -363,6 +413,15 @@ def test_refuses_to_overwrite_by_default(recording: Path, dataset: Path):
         Hdf5ToLeRobotConverter([recording], dataset, ConverterConfig(fps=FPS)).convert()
 
 
+def test_tacverse_config_loads():
+    config = ConverterConfig.from_yaml(
+        Path(__file__).resolve().parent.parent / "configs" / "tacverse_rdt.yaml"
+    )
+    assert (config.fps, config.pair, config.keep_source_timestamp) == (20, "grid", True)
+    assert config.robot_type == "bi_rdt_gripper"
+    assert len(config.state_names({"left_tcp": "pose", "left_gripper": "gripper", "right_tcp": "pose", "right_gripper": "gripper"})) == 20
+
+
 def test_shipped_config_loads():
     config = ConverterConfig.from_yaml(
         Path(__file__).resolve().parent.parent / "configs" / "hdf52lerobot.yaml"
@@ -376,6 +435,37 @@ def test_shipped_config_loads():
     assert config.warn_sync_gap_frames < config.max_sync_gap_frames
     kinds = {"left_tcp": "pose", "left_gripper": "gripper", "right_tcp": "pose", "right_gripper": "gripper"}
     assert len(config.state_names(kinds)) == 20
+
+
+def test_grid_conversion_writes_source_timestamps_and_sources_manifest(recording: Path, tmp_path: Path):
+    import pyarrow.parquet as pq
+
+    config = ConverterConfig(
+        fps=FPS, pair="grid", keep_source_timestamp=True, task="grid", gop=4, preset="ultrafast"
+    )
+    output = Hdf5ToLeRobotConverter([recording], tmp_path / "grid", config).convert()
+
+    info = json.loads((output / "meta" / "info.json").read_text())
+    assert info["features"]["observation.source_timestamp"] == {"dtype": "float64", "names": None, "shape": [1]}
+    table = pq.read_table(output / "data" / "chunk-000" / "file-000.parquet")
+    assert table.column_names[-1] == "observation.source_timestamp"
+    stamps = table.column("observation.source_timestamp").to_numpy()
+    assert stamps.dtype == np.float64 and stamps.min() > 1_600_000_000
+    assert np.all(np.diff(stamps[: info["total_frames"] // 2]) >= 0)
+    stats = json.loads((output / "meta" / "stats.json").read_text())
+    assert stats["observation.source_timestamp"]["count"] == [info["total_frames"]]
+    episodes = pq.read_table(output / "meta" / "episodes" / "chunk-000" / "file-000.parquet").column_names
+    assert "stats/observation.source_timestamp/mean" in episodes
+
+    sources = json.loads((output / "meta" / "sources.json").read_text())
+    assert sources["format"] == "hdf52lerobot/sources"
+    assert sources["config"]["pair"] == "grid" and sources["config"]["fps"] == FPS
+    assert [entry["episode_index"] for entry in sources["episodes"]] == [0, 1]
+    first = sources["episodes"][0]
+    assert first["source_dir"].endswith("ep_0001") and first["source_parent"] == recording.name
+    assert first["frames"] == first["source_iterations"] - first["dropped_iterations"] + first["duplicated_frames"]
+    assert set(first["tick_offset_ms"]) == {"p50", "p95", "max"}
+    assert len(first["files"]) == 11
 
 
 def test_nearest_pairing_converts_too(recording: Path, tmp_path: Path):

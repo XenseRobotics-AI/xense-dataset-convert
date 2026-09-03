@@ -19,7 +19,7 @@ GRIPPER = "gripper"
 KINDS = (VIDEO, POSE, GRIPPER)
 
 QUAT_ORDERS = ("wxyz", "xyzw")
-PAIR_MODES = ("index", "nearest")
+PAIR_MODES = ("index", "nearest", "grid")
 
 # Field suffixes contributed to observation.state by each stream kind.
 POSE_SUFFIXES = ("x", "y", "z", "r1", "r2", "r3", "r4", "r5", "r6")
@@ -110,7 +110,17 @@ class ConverterConfig:
     """``index`` pairs frame i of every stream with frame i of the master clock
     (correct when all streams share one trigger and have equal length).
     ``nearest`` re-pairs by real timestamps. Streams whose length differs from
-    the master always fall back to ``nearest``."""
+    the master always fall back to ``nearest``. ``grid`` pairs like ``index``
+    and then resamples the recorder's iterations onto a uniform ``fps`` grid by
+    nearest neighbour, for recorders whose loop does not run at ``fps``: a tick
+    inside a stall repeats the previous iteration, iterations between ticks are
+    dropped, and both are reported per stream."""
+
+    keep_source_timestamp: bool = False
+    """Also write ``observation.source_timestamp``: the recorder's absolute
+    timestamp (master clock, seconds) of the iteration each frame came from.
+    ``timestamp`` stays ``frame_index / fps`` as LeRobot requires; this column
+    keeps the real time axis alongside it for audits and re-alignment."""
 
     max_sync_gap_frames: float = 3.0
     """Hard limit on |stream timestamp - master timestamp|, in frames.

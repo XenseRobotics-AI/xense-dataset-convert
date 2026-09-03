@@ -12,6 +12,7 @@ from .config import ConverterConfig
 from .source import SourceEpisode
 
 SCALAR_FEATURES = ("episode_index", "frame_index", "index", "task_index")
+SOURCE_TIMESTAMP = "observation.source_timestamp"
 
 CODEC_NAMES = {"libx264": "h264", "libx265": "hevc", "libsvtav1": "av1"}
 
@@ -44,6 +45,8 @@ def build_features(
     for name in SCALAR_FEATURES:
         features[name] = {"dtype": "int64", "names": None, "shape": [1]}
     features["timestamp"] = {"dtype": "float32", "names": None, "shape": [1]}
+    if config.keep_source_timestamp:
+        features[SOURCE_TIMESTAMP] = {"dtype": "float64", "names": None, "shape": [1]}
 
     for stream in episode.videos.values():
         features[stream.feature] = {

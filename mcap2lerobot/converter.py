@@ -7,13 +7,14 @@ import inspect
 import logging
 import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
 import numpy as np
 
 from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, ConverterConfig
-from .reader import EpisodeData, McapEpisodeReader, TimedArray, TimedImage
+from .reader import EpisodeData, McapEpisodeReader, TimedArray
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +64,77 @@ def infer_fps(episode: EpisodeData) -> int:
     return fps
 
 
+def nearest_indices(source_ns: np.ndarray, target_ns: np.ndarray) -> np.ndarray:
+    """For each target time, the index of the nearest source time.
+
+    Vectorised twin of :func:`nearest_value` with the same tie rule: when a
+    target sits exactly between two sources the later one wins, which is what
+    ``min()`` over ``[insertion, insertion - 1]`` picked.
+    """
+    source = np.asarray(source_ns, dtype=np.int64)
+    target = np.asarray(target_ns, dtype=np.int64)
+    if source.size == 0:
+        raise ValueError("No samples available")
+    insertion = np.searchsorted(source, target)  # first source >= target
+    right = np.clip(insertion, 0, source.size - 1)
+    left = np.clip(insertion - 1, 0, source.size - 1)
+    gap_right = np.abs(source[right] - target)
+    gap_left = np.abs(source[left] - target)
+    take_right = (insertion == 0) | ((insertion < source.size) & (gap_right <= gap_left))
+    return np.where(take_right, right, left).astype(np.int64)
+
+
+@dataclass(frozen=True)
+class Plan:
+    """Which action and which camera packet every state uses: pass two's shopping list."""
+
+    action_index: np.ndarray
+    """``(states,)`` index into ``episode.actions``."""
+    video_index: dict[str, np.ndarray]
+    """Feature -> ``(states,)`` packet number within that camera's stream."""
+
+
+def _pair_to_states(source_ns: np.ndarray, state_ns: np.ndarray, max_gap_ns: int, label: str) -> np.ndarray:
+    source = np.asarray(source_ns, dtype=np.int64)
+    if source.size == 0:
+        raise ValueError(f"No samples available for {label}")
+    index = nearest_indices(source, state_ns)
+    gaps = np.abs(source[index] - state_ns)
+    worst = int(gaps.argmax())
+    if gaps[worst] > max_gap_ns:
+        raise ValueError(
+            f"Nearest {label} sample is {gaps[worst] / 1e6:.2f} ms away, "
+            f"exceeding the {max_gap_ns / 1e6:.2f} ms limit"
+        )
+    return index
+
+
+def plan_pairing(episode: EpisodeData, fps: int, max_sync_gap_frames: float) -> Plan:
+    """Pair every state with its action and camera packets, before anything is written.
+
+    Raises ``ValueError`` on the first stream that sits further than
+    ``max_sync_gap_frames`` from a state, so a badly synchronised episode fails
+    before the dataset is created rather than half-way through it.
+    """
+    state_ns = np.asarray([item.timestamp_ns for item in episode.states], dtype=np.int64)
+    max_gap_ns = int(max_sync_gap_frames * 1_000_000_000 / fps)
+    action_ns = np.asarray([item.timestamp_ns for item in episode.actions], dtype=np.int64)
+    return Plan(
+        action_index=_pair_to_states(action_ns, state_ns, max_gap_ns, "action"),
+        video_index={
+            feature_name: _pair_to_states(index.timestamps_ns, state_ns, max_gap_ns, feature_name)
+            for feature_name, index in episode.videos.items()
+        },
+    )
+
+
 def nearest_value(
-    values: Sequence[TimedArray] | Sequence[TimedImage],
+    values: Sequence[TimedArray],
     timestamp_ns: int,
     max_gap_ns: int,
     label: str,
 ) -> np.ndarray:
+    """Single-query form of the pairing; the converter uses :func:`plan_pairing`."""
     timestamps = np.asarray([item.timestamp_ns for item in values], dtype=np.int64)
     insertion = int(np.searchsorted(timestamps, timestamp_ns))
     candidates = []
@@ -136,22 +202,20 @@ def _vector_feature(episode: EpisodeData, key: str, value: np.ndarray, prefix: s
     }
 
 
-def _video_feature(episode: EpisodeData, key: str, image: np.ndarray) -> dict[str, Any]:
+def _video_feature(episode: EpisodeData, key: str, shape: tuple[int, ...]) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "dtype": "video",
-        "shape": image.shape,
+        "shape": tuple(shape),
         "names": ["height", "width", "channels"],
     }
     declared = declared_feature(episode, key)
     if declared is not None:
-        if declared.get("dtype") in ("video", "image") and tuple(declared.get("shape") or ()) == tuple(
-            image.shape
-        ):
+        if declared.get("dtype") in ("video", "image") and tuple(declared.get("shape") or ()) == tuple(shape):
             entry["names"] = declared.get("names") or entry["names"]
         else:
             logger.warning(
                 "Ignoring the embedded %s declaration (dtype=%s, shape=%s): decoded frames are %s",
-                key, declared.get("dtype"), declared.get("shape"), image.shape,
+                key, declared.get("dtype"), declared.get("shape"), tuple(shape),
             )
     return entry
 
@@ -163,11 +227,11 @@ def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
         "observation.state": _vector_feature(episode, "observation.state", state, "state"),
         "action": _vector_feature(episode, "action", action, "action"),
     }
-    for feature_name, images in sorted(episode.videos.items()):
-        image = images[0].value
-        if image.ndim != 3 or image.shape[2] not in (1, 3, 4):
-            raise ValueError(f"{feature_name} must be an HWC image, got {image.shape}")
-        features[feature_name] = _video_feature(episode, feature_name, image)
+    for feature_name, index in sorted(episode.videos.items()):
+        shape = tuple(index.shape)
+        if len(shape) != 3 or shape[2] not in (1, 3, 4):
+            raise ValueError(f"{feature_name} must be an HWC image, got {shape}")
+        features[feature_name] = _video_feature(episode, feature_name, shape)
     return features
 
 
@@ -278,6 +342,9 @@ class McapToLeRobotConverter:
         first_episode = self.reader.read(mcap_files[0])
         fps = resolve_fps(self.config, first_episode)
         features = build_features(first_episode)
+        # Pair before creating anything: a badly synchronised first episode
+        # then fails without leaving a half-written dataset behind.
+        first_plan = plan_pairing(first_episode, fps, self.config.max_sync_gap_frames)
         robot_type = resolve_robot_type(self.config, first_episode)
         video_codec = source_video_codec(first_episode)
         if first_episode.info is None:
@@ -300,7 +367,7 @@ class McapToLeRobotConverter:
         )
 
         try:
-            self._write_episode(dataset, first_episode, features, fps)
+            self._write_episode(dataset, first_episode, features, fps, first_plan)
             for mcap_path in mcap_files[1:]:
                 episode = self.reader.read(mcap_path)
                 self._write_episode(dataset, episode, features, fps)
@@ -321,31 +388,40 @@ class McapToLeRobotConverter:
         episode: EpisodeData,
         expected_features: dict[str, dict[str, Any]],
         fps: int,
+        plan: Plan | None = None,
     ) -> None:
         logger.info("Converting episode from %s", episode.source)
         actual_features = build_features(episode)
         if actual_features != expected_features:
             raise ValueError(f"Feature layout changed in {episode.source}")
+        if plan is None:
+            plan = plan_pairing(episode, fps, self.config.max_sync_gap_frames)
 
         state_dtype = np.dtype(expected_features["observation.state"]["dtype"])
         action_dtype = np.dtype(expected_features["action"]["dtype"])
-        max_gap_ns = int(self.config.max_sync_gap_frames * 1_000_000_000 / fps)
-        for state in episode.states:
-            # No "timestamp" key: lerobot's validate_frame rejects it as an extra
-            # feature, and add_frame derives frame_index / fps itself, which is
-            # exactly the value we would pass.
-            frame: dict[str, Any] = {
-                "observation.state": np.array(state.value, dtype=state_dtype),
-                "action": np.array(
-                    nearest_value(episode.actions, state.timestamp_ns, max_gap_ns, "action"),
-                    dtype=action_dtype,
-                ),
-                "task": frame_task(self.config, episode, state),
-            }
-            for feature_name, images in episode.videos.items():
-                frame[feature_name] = nearest_value(
-                    images, state.timestamp_ns, max_gap_ns, feature_name
-                ).copy()
-            dataset.add_frame(frame)
+        total = len(episode.states)
+        frames = self.reader.iter_frames(episode, plan.video_index)
+        written = 0
+        try:
+            for position, (state, images) in enumerate(zip(episode.states, frames)):
+                # No "timestamp" key: lerobot's validate_frame rejects it as an
+                # extra feature, and add_frame derives frame_index / fps itself,
+                # which is exactly the value we would pass.
+                frame: dict[str, Any] = {
+                    "observation.state": np.array(state.value, dtype=state_dtype),
+                    "action": np.array(
+                        episode.actions[int(plan.action_index[position])].value, dtype=action_dtype
+                    ),
+                    "task": frame_task(self.config, episode, state),
+                }
+                frame.update(images)
+                dataset.add_frame(frame)
+                written += 1
+        finally:
+            close = getattr(frames, "close", None)
+            if callable(close):
+                close()
+        if written != total:
+            raise ValueError(f"{episode.source}: assembled {written} of {total} frames")
         dataset.save_episode()
-        logger.info("Saved episode with %d frames", len(episode.states))
+        logger.info("Saved episode with %d frames", total)

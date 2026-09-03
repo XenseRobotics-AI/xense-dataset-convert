@@ -49,6 +49,10 @@ other_mappings:
   frame_id: right_tactile_1_camera
   format: h264
 attachments:
+- file_pattern: meta/info.json
+  mime_type: application/json
+- file_pattern: meta/episode.json
+  mime_type: application/json
 - file_pattern: '**/*.log'
   mime_type: text/plain
 metadata: []

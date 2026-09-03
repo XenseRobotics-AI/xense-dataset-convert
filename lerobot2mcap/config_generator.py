@@ -98,8 +98,10 @@ class ConfigGenerator:
             episode_index, chunk_index
         )
 
-        # Generate attachments (log file if requested)
-        attachments = []
+        # Attachments: the source dataset's info.json (the dataset root is the
+        # input directory in the v2 path, so the file is found in place) and the
+        # log file if requested.
+        attachments = [AttachmentConfig(file_pattern="meta/info.json", mime_type="application/json")]
         if include_log:
             attachments.append(
                 AttachmentConfig(
@@ -270,8 +272,12 @@ class ConfigGenerator:
                 )
             )
 
-        # Attachments
-        attachments = []
+        # Attachments: the source metadata the converter staged under meta/
+        # (read back by mcap2lerobot), plus the log file if requested.
+        attachments = [
+            AttachmentConfig(file_pattern="meta/info.json", mime_type="application/json"),
+            AttachmentConfig(file_pattern="meta/episode.json", mime_type="application/json"),
+        ]
         if include_log:
             attachments.append(
                 AttachmentConfig(

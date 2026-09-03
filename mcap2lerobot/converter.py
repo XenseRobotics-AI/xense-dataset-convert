@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
 import numpy as np
 
-from .config import ConverterConfig
+from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, ConverterConfig
 from .reader import EpisodeData, McapEpisodeReader, TimedArray, TimedImage
 
 logger = logging.getLogger(__name__)
+
+# meta/info.json spells codecs the way ffprobe reports them; lerobot's encoder
+# settings take these names (h264 and hevc as-is, av1 as its software encoder).
+VIDEO_CODEC_TO_ENCODER = {"h264": "h264", "hevc": "hevc", "av1": "libsvtav1"}
 
 
 class DatasetWriter(Protocol):
@@ -82,31 +88,151 @@ def nearest_value(
     return values[index].value
 
 
+# -- what the MCAP says about its source dataset ------------------------------
+
+
+def declared_feature(episode: EpisodeData, key: str) -> dict[str, Any] | None:
+    """The source dataset's ``features[key]`` block, when lerobot2mcap attached it."""
+    features = (episode.info or {}).get("features") or {}
+    spec = features.get(key)
+    return spec if isinstance(spec, dict) else None
+
+
+def _generated_names(prefix: str, size: int) -> list[str]:
+    return [f"{prefix}_{index}" for index in range(size)]
+
+
+def _vector_feature(episode: EpisodeData, key: str, value: np.ndarray, prefix: str) -> dict[str, Any]:
+    """Feature entry for a 1-D numeric column, preferring the source declaration.
+
+    The MCAP schema widens or narrows nothing on purpose, but the reader only
+    sees a bare numeric vector: the declaration is what restores the original
+    dtype and the component names.
+    """
+    declared = declared_feature(episode, key)
+    if declared is not None:
+        shape = tuple(int(dim) for dim in (declared.get("shape") or ()))
+        dtype = declared.get("dtype")
+        names = declared.get("names")
+        try:
+            numeric = dtype is not None and np.issubdtype(np.dtype(dtype), np.number)
+        except TypeError:
+            numeric = False
+        if numeric and math.prod(shape) == value.size:
+            return {
+                "dtype": str(dtype),
+                "shape": shape,
+                "names": names if names is not None else _generated_names(prefix, value.size),
+            }
+        logger.warning(
+            "Ignoring the embedded %s declaration (dtype=%s, shape=%s): the MCAP carries "
+            "vectors of %d values",
+            key, dtype, shape, value.size,
+        )
+    return {
+        "dtype": value.dtype.name,
+        "shape": value.shape,
+        "names": _generated_names(prefix, value.size),
+    }
+
+
+def _video_feature(episode: EpisodeData, key: str, image: np.ndarray) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "dtype": "video",
+        "shape": image.shape,
+        "names": ["height", "width", "channels"],
+    }
+    declared = declared_feature(episode, key)
+    if declared is not None:
+        if declared.get("dtype") in ("video", "image") and tuple(declared.get("shape") or ()) == tuple(
+            image.shape
+        ):
+            entry["names"] = declared.get("names") or entry["names"]
+        else:
+            logger.warning(
+                "Ignoring the embedded %s declaration (dtype=%s, shape=%s): decoded frames are %s",
+                key, declared.get("dtype"), declared.get("shape"), image.shape,
+            )
+    return entry
+
+
 def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
     state = episode.states[0].value
     action = episode.actions[0].value
     features: dict[str, dict[str, Any]] = {
-        "observation.state": {
-            "dtype": state.dtype.name,
-            "shape": state.shape,
-            "names": [f"state_{index}" for index in range(state.size)],
-        },
-        "action": {
-            "dtype": action.dtype.name,
-            "shape": action.shape,
-            "names": [f"action_{index}" for index in range(action.size)],
-        },
+        "observation.state": _vector_feature(episode, "observation.state", state, "state"),
+        "action": _vector_feature(episode, "action", action, "action"),
     }
     for feature_name, images in sorted(episode.videos.items()):
         image = images[0].value
         if image.ndim != 3 or image.shape[2] not in (1, 3, 4):
             raise ValueError(f"{feature_name} must be an HWC image, got {image.shape}")
-        features[feature_name] = {
-            "dtype": "video",
-            "shape": image.shape,
-            "names": ["height", "width", "channels"],
-        }
+        features[feature_name] = _video_feature(episode, feature_name, image)
     return features
+
+
+def resolve_fps(config: ConverterConfig, episode: EpisodeData) -> int:
+    """Explicit override, else the source dataset's fps, else inferred."""
+    if config.fps:
+        return config.fps
+    embedded = (episode.info or {}).get("fps")
+    if embedded:
+        return int(embedded)
+    return infer_fps(episode)
+
+
+def resolve_robot_type(config: ConverterConfig, episode: EpisodeData) -> str:
+    return config.robot_type or str((episode.info or {}).get("robot_type") or DEFAULT_ROBOT_TYPE)
+
+
+def source_video_codec(episode: EpisodeData) -> str | None:
+    """The codec the source dataset's videos were encoded with, per ``info.json``."""
+    features = (episode.info or {}).get("features") or {}
+    for spec in features.values():
+        if isinstance(spec, dict) and spec.get("dtype") == "video":
+            codec = (spec.get("info") or {}).get("video.codec")
+            if codec:
+                return str(codec)
+    return None
+
+
+def frame_task(config: ConverterConfig, episode: EpisodeData, state: TimedArray) -> str:
+    """Task text for one frame: override, else the row's own task, else default."""
+    if config.task:
+        return config.task
+    meta = episode.episode_meta or {}
+    mapping = meta.get("task_index_to_task") or {}
+    if state.task_index is not None and str(state.task_index) in mapping:
+        return str(mapping[str(state.task_index)])
+    tasks = meta.get("tasks") or []
+    if len(tasks) == 1:
+        return str(tasks[0])
+    return DEFAULT_TASK
+
+
+def encoder_kwargs(dataset_cls: Any, video_codec: str | None) -> dict[str, Any]:
+    """Ask lerobot to encode with the source codec, through whichever API it has.
+
+    lerobot 0.5.x takes ``LeRobotDataset.create(vcodec=...)``; 0.6.x moved the
+    setting into ``rgb_encoder=RGBEncoderConfig(vcodec=...)``. Without a hint
+    lerobot picks its own default (AV1 on both), which is what an MCAP without
+    the embedded metadata gets.
+    """
+    if video_codec is None:
+        return {}
+    encoder = VIDEO_CODEC_TO_ENCODER.get(video_codec)
+    if encoder is None:
+        logger.warning("Source videos use %r, which lerobot cannot encode; using its default", video_codec)
+        return {}
+    parameters = inspect.signature(dataset_cls.create).parameters
+    if "vcodec" in parameters:
+        return {"vcodec": encoder}
+    if "rgb_encoder" in parameters:
+        from lerobot.configs.video import RGBEncoderConfig
+
+        return {"rgb_encoder": RGBEncoderConfig(vcodec=encoder)}
+    logger.warning("This lerobot exposes no encoder setting on LeRobotDataset.create; using its default codec")
+    return {}
 
 
 class McapToLeRobotConverter:
@@ -129,7 +255,7 @@ class McapToLeRobotConverter:
         self.dataset_factory = dataset_factory or self._default_dataset_factory
 
     @staticmethod
-    def _default_dataset_factory(**kwargs: Any) -> DatasetWriter:
+    def _default_dataset_factory(video_codec: str | None = None, **kwargs: Any) -> DatasetWriter:
         try:
             from lerobot.datasets.lerobot_dataset import LeRobotDataset
         except ImportError as error:
@@ -139,6 +265,7 @@ class McapToLeRobotConverter:
         # saved. Hand it a copy so `_write_episode`'s layout check keeps comparing
         # against the layout we built, not against lerobot's annotated one.
         kwargs["features"] = copy.deepcopy(kwargs["features"])
+        kwargs.update(encoder_kwargs(LeRobotDataset, video_codec))
         return LeRobotDataset.create(**kwargs)
 
     def convert(self) -> Path:
@@ -149,16 +276,27 @@ class McapToLeRobotConverter:
             raise FileExistsError(f"Output path already exists: {self.output_root}")
 
         first_episode = self.reader.read(mcap_files[0])
-        fps = self.config.fps or infer_fps(first_episode)
+        fps = resolve_fps(self.config, first_episode)
         features = build_features(first_episode)
-        logger.info("Creating LeRobot v3 dataset at %s (fps=%d)", self.output_root, fps)
+        robot_type = resolve_robot_type(self.config, first_episode)
+        video_codec = source_video_codec(first_episode)
+        if first_episode.info is None:
+            logger.info(
+                "%s carries no embedded LeRobot metadata; feature names, task and "
+                "robot_type fall back to defaults",
+                mcap_files[0].name,
+            )
+        logger.info(
+            "Creating LeRobot v3 dataset at %s (fps=%d, robot_type=%s)", self.output_root, fps, robot_type
+        )
         dataset = self.dataset_factory(
             repo_id=self.repo_id,
             root=self.output_root,
             fps=fps,
-            robot_type=self.config.robot_type,
+            robot_type=robot_type,
             features=features,
             use_videos=bool(first_episode.videos),
+            video_codec=video_codec,
         )
 
         try:
@@ -189,17 +327,20 @@ class McapToLeRobotConverter:
         if actual_features != expected_features:
             raise ValueError(f"Feature layout changed in {episode.source}")
 
+        state_dtype = np.dtype(expected_features["observation.state"]["dtype"])
+        action_dtype = np.dtype(expected_features["action"]["dtype"])
         max_gap_ns = int(self.config.max_sync_gap_frames * 1_000_000_000 / fps)
-        for frame_index, state in enumerate(episode.states):
+        for state in episode.states:
             # No "timestamp" key: lerobot's validate_frame rejects it as an extra
             # feature, and add_frame derives frame_index / fps itself, which is
             # exactly the value we would pass.
             frame: dict[str, Any] = {
-                "observation.state": state.value.copy(),
-                "action": nearest_value(
-                    episode.actions, state.timestamp_ns, max_gap_ns, "action"
-                ).copy(),
-                "task": self.config.task,
+                "observation.state": np.array(state.value, dtype=state_dtype),
+                "action": np.array(
+                    nearest_value(episode.actions, state.timestamp_ns, max_gap_ns, "action"),
+                    dtype=action_dtype,
+                ),
+                "task": frame_task(self.config, episode, state),
             }
             for feature_name, images in episode.videos.items():
                 frame[feature_name] = nearest_value(

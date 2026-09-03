@@ -14,6 +14,7 @@ failure (``False`` vs an exception).
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -30,7 +31,12 @@ __all__ = [
     "__version__",
 ]
 
-__version__ = "0.3.1"
+try:
+    # Single source of truth is pyproject.toml; a checkout used as a submodule
+    # without being installed has no distribution metadata to read.
+    __version__ = version("xense-dataset-convert")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
 
 
 def convert(

@@ -55,8 +55,10 @@ class DatasetInfo:
 
         # Load episodes metadata for v3.0 datasets
         self._episodes_df: pd.DataFrame | None = None
+        self._tasks: dict[int, str] = {}
         if self.is_v3_format():
             self._load_episodes_metadata()
+            self._tasks = self._load_tasks()
 
         logger.info(
             f"Loaded dataset info from {info_json_path}"
@@ -145,6 +147,64 @@ class DatasetInfo:
         else:
             logger.warn("No episode metadata could be loaded")
 
+    def _load_tasks(self) -> dict[int, str]:
+        """``task_index -> task`` from ``meta/tasks.parquet`` (v3.0).
+
+        LeRobot stores the task text as the frame's index and ``task_index`` as
+        its only column.
+        """
+        path = self.dataset_root / "meta" / "tasks.parquet"
+        if not path.exists():
+            logger.warn(f"Tasks file not found: {path}; task texts will not be embedded")
+            return {}
+        frame = pd.read_parquet(path)
+        if "task" in frame.columns:
+            frame = frame.set_index("task")
+        if "task_index" not in frame.columns:
+            logger.warn(f"{path} has no task_index column; task texts will not be embedded")
+            return {}
+        return {int(index): str(task) for task, index in frame["task_index"].items()}
+
+    def _episode_row(self, episode_index: int) -> pd.Series:
+        if self._episodes_df is None:
+            raise ValueError(
+                "Episodes metadata not loaded. "
+                "This method is only available for v3.0 datasets."
+            )
+        episode_row = self._episodes_df[
+            self._episodes_df["episode_index"] == episode_index
+        ]
+        if episode_row.empty:
+            raise ValueError(f"Episode {episode_index} not found in metadata")
+        return episode_row.iloc[0]
+
+    def get_episode_tasks(self, episode_index: int) -> list[str]:
+        """The task texts of one episode, from the ``tasks`` column (v3.0)."""
+        row = self._episode_row(episode_index)
+        if "tasks" not in row.index or row["tasks"] is None:
+            return []
+        return [str(task) for task in list(row["tasks"])]
+
+    def episode_manifest(self, episode_index: int) -> dict:
+        """What mcap2lerobot needs to restore an episode's tasks and identity.
+
+        Embedded in every episode MCAP as the ``meta/episode.json`` attachment,
+        next to a verbatim copy of ``meta/info.json``.
+        """
+        row = self._episode_row(episode_index)
+        tasks = self.get_episode_tasks(episode_index)
+        mapping = {str(index): task for index, task in self._tasks.items() if task in tasks}
+        if not mapping:
+            mapping = {str(index): task for index, task in self._tasks.items()}
+        return {
+            "format": "lerobot2mcap/episode",
+            "format_version": 1,
+            "episode_index": int(row["episode_index"]),
+            "length": int(row["length"]),
+            "tasks": tasks,
+            "task_index_to_task": mapping,
+        }
+
     def get_episode_info(self, episode_index: int) -> dict:
         """
         Get detailed info for a specific episode (v3.0 format).
@@ -175,19 +235,7 @@ class DatasetInfo:
         Raises:
             ValueError: If episode_index is not found or v3.0 metadata not loaded
         """
-        if self._episodes_df is None:
-            raise ValueError(
-                "Episodes metadata not loaded. "
-                "This method is only available for v3.0 datasets."
-            )
-
-        episode_row = self._episodes_df[
-            self._episodes_df["episode_index"] == episode_index
-        ]
-        if episode_row.empty:
-            raise ValueError(f"Episode {episode_index} not found in metadata")
-
-        row = episode_row.iloc[0]
+        row = self._episode_row(episode_index)
 
         info = {
             "episode_index": int(row["episode_index"]),

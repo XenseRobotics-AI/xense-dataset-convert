@@ -25,25 +25,46 @@ Dependencies are not split into extras, so this pulls `lerobot` and its
 torch stack even if you only intend to use `hdf52lerobot` (whose own code never
 imports lerobot — it writes the v3.0 layout directly).
 
-### Environment alignment
+### Standalone environment
 
-Pins track [`xense-taccap-lerobot`](https://github.com/Vertax42/xense-taccap-lerobot),
-the lerobot fork (`0.5.1+xtac.0.0.6`) this is meant to be installed alongside:
+The repository does not need the lerobot fork: any lerobot that reads and
+writes the v3.0 dataset format works. The tested recipe is a conda environment
+that provides Python and the `ffmpeg` binary (`lerobot2mcap` shells out to it),
+with every Python dependency coming from `pyproject.toml`:
 
-| | Here | Fork |
-|---|---|---|
-| Python | `>=3.12` | `>=3.12` |
-| lerobot | `>=0.5.1,<0.6` | *is* `0.5.1+xtac.0.0.6` |
-| av | `>=15.0.0,<16.0.0` | `>=15.0.0,<16.0.0` |
-| numpy | `>=1.26.4` | `>=1.26.4` |
+```bash
+conda env create -f environment.yml   # python 3.12 + ffmpeg, then pip install -e .[dev]
+conda activate xense-convert
+pytest -q                             # 53 tests, no dataset needed
+```
 
-Installing into an environment that already has the fork leaves it in place: a
-local-version segment sorts above the plain release, so `0.5.1+xtac.0.0.6`
-satisfies `>=0.5.1`. The `<0.6` cap keeps a fork-less environment on the same
-0.5.x line rather than resolving to the 0.6.x already published on PyPI.
+Without conda: Python >=3.12, an `ffmpeg` on `PATH`, then `pip install -e .[dev]`.
+The `[dev]` extra adds `pytest` and `ruff`; everything else is a hard dependency.
 
-Only `lerobot2mcap` and `lerobot2zarr` import lerobot, and between them they
-touch exactly one symbol — `lerobot.datasets.lerobot_dataset.LeRobotDataset`.
+### Which lerobot
+
+`lerobot[dataset]>=0.5.1,<0.7`. The on-disk format is `v3.0` in every release
+of that range; the cap is about lerobot's *Python API*, which three of the four
+converters call:
+
+| Package | lerobot symbols used |
+|---|---|
+| `lerobot2mcap` | `LeRobotDataset(...)`, for `download` |
+| `lerobot2zarr` | `LeRobotDataset(...)`, to read frames |
+| `mcap2lerobot` | `LeRobotDataset.create` / `add_frame` / `save_episode` / `finalize` |
+| `hdf52lerobot` | none: it writes the v3.0 layout directly |
+
+Both ends of the range were exercised end to end (every CLI plus the Python
+facade, on a synthetic recording): 0.5.1 and 0.6.1. Bump the cap after testing
+a new minor rather than leaving it open, because 0.6 already reorganised the
+writer once. The `[dataset]` extra matters from 0.6 on, where `datasets`,
+`pyarrow`, `pandas` and `torchcodec` left lerobot's core dependencies; 0.5.x
+ignores it.
+
+The [`xense-taccap-lerobot`](https://github.com/Vertax42/xense-taccap-lerobot)
+fork (`0.5.1+xtac.0.0.6`) still satisfies the range, so installing into an
+environment that already has it leaves it in place: PEP 440 sorts a local
+version above the plain release.
 
 ## Unified Python interface
 
@@ -141,9 +162,13 @@ and the rotation/gripper conventions.
 ## Development
 
 ```bash
-pytest tests/ -q                                    # lerobot2zarr, mcap2lerobot, hdf52lerobot
+pip install -e .[dev]
+pytest -q                                           # lerobot2zarr, mcap2lerobot, hdf52lerobot, facade
 ruff check --select E9,F63,F7,F82 .
 ```
+
+`pyproject.toml` puts the repository root on `pythonpath` for pytest, so the
+suite also runs against an uninstalled checkout, file by file or as a whole.
 
 `lerobot2mcap` has no unit suite: `tests/` carries a standalone MCAP validator
 (`tests/validate_mcap.py`) and an encoder benchmark (`tests/bench_encoder.sh`),

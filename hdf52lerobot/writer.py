@@ -45,6 +45,10 @@ class EpisodeRecord:
     videos: dict[str, VideoPlacement] = field(default_factory=dict)
     meta_chunk_index: int = 0
     meta_file_index: int = 0
+    stats: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """This episode's own ``{feature: {min, max, mean, std, count}}``, stored as
+    ``stats/<feature>/<stat>`` columns so LeRobot's dataset tools can
+    re-aggregate after deleting, splitting or merging episodes."""
 
 
 class DatasetWriter:
@@ -216,6 +220,13 @@ class DatasetWriter:
                 rows[f"videos/{key}/{suffix}"] = []
         rows["meta/episodes/chunk_index"] = []
         rows["meta/episodes/file_index"] = []
+        stat_columns = [
+            f"stats/{feature}/{stat}"
+            for feature in self.features
+            for stat in ("min", "max", "mean", "std", "count")
+        ]
+        for name in stat_columns:
+            rows[name] = []
 
         for record in self._episodes:
             rows["episode_index"].append(record.episode_index)
@@ -233,12 +244,22 @@ class DatasetWriter:
                 rows[f"videos/{key}/to_timestamp"].append(placement.to_timestamp)
             rows["meta/episodes/chunk_index"].append(record.meta_chunk_index)
             rows["meta/episodes/file_index"].append(record.meta_file_index)
+            for name in stat_columns:
+                _, feature, stat = name.split("/", 2)
+                try:
+                    rows[name].append(record.stats[feature][stat])
+                except KeyError:
+                    raise ValueError(
+                        f"episode {record.episode_index} has no {stat!r} for {feature!r}"
+                    ) from None
 
         frame = pd.DataFrame(rows)
         fields = []
         for name in frame.columns:
             if name == "tasks":
                 dtype: Any = pa.list_(pa.string())
+            elif name.startswith("stats/"):
+                dtype = self._stat_type(name)
             elif name.endswith("timestamp"):
                 dtype = pa.float64()
             else:
@@ -248,6 +269,22 @@ class DatasetWriter:
         path = self.root / EPISODES_PATH.format(chunk_index=0, file_index=0)
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pandas(frame, schema=pa.schema(fields), preserve_index=False), path)
+
+    def _stat_type(self, column: str):
+        """Arrow type of one ``stats/<feature>/<stat>`` column.
+
+        Matches what LeRobot's own writer produces through pandas: ``count`` is a
+        one-element int list, image stats are ``(3, 1, 1)`` nested lists, every
+        other stat a list with one entry per component.
+        """
+        import pyarrow as pa
+
+        _, feature, stat = column.split("/", 2)
+        if stat == "count":
+            return pa.list_(pa.int64())
+        if feature in self.video_keys:
+            return pa.list_(pa.list_(pa.list_(pa.float64())))
+        return pa.list_(pa.float64())
 
     def _write_tasks(self) -> None:
         import pandas as pd

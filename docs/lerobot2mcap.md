@@ -8,13 +8,13 @@ Convert LeRobot datasets to MCAP format with automatic configuration generation 
 - **Episode-based conversion**: Converts each episode to a separate MCAP file in its own directory
 - **Chunk-aware**: Handles datasets organized in chunks (supports datasets with 1000+ episodes)
 - **Multi-video support**: Auto-detects and converts all video streams
-- **Terminal log support**: Parses raw `.log` files into `rcl_interfaces/msg/Log` messages with full metadata
+- **Terminal log support**: a `.log` file in the dataset root is carried into every episode's MCAP as an attachment
 - **ROS2 format**: Outputs ROS2-compatible MCAP files (configurable via metadata)
 - **v3.0-first**: Handles merged parquet+video with per-episode slicing (rows + timestamp-based video trim)
 - **Cross-compatible**: Still supports LeRobot v2.0, v2.1 (per-episode files)
-- **AV1-ready**: PyAV monkey-patch replaces OpenCV video loader for AV1/H.264/etc.
+- **All-keyframe video**: each episode's video is sliced and re-encoded with ffmpeg as all-keyframe H.264, so every `CompressedVideo` message decodes on its own
 - **Metadata-driven**: Reads FPS, video codecs, writer format, and chunk size from dataset metadata
-- **Parallel conversion**: Multi-threaded episode conversion with `-j` flag (default: min(8, cpu_count // 2))
+- **Per-episode parallelism**: `-j` sets how many cameras of one episode are sliced and encoded concurrently; episodes themselves run sequentially
 
 ## Installation
 
@@ -129,7 +129,7 @@ lerobot2mcap download lerobot/pusht -o ./my_mcap_output
 # Download specific episodes only
 lerobot2mcap download lerobot/pusht -e 0 1 2
 
-# Parallel conversion with 8 workers
+# Encode up to 8 cameras of an episode concurrently
 lerobot2mcap download lerobot/pusht -j8
 ```
 
@@ -138,7 +138,7 @@ lerobot2mcap download lerobot/pusht -j8
 - `dataset_id`: Hugging Face dataset ID (e.g., `lerobot/pusht`)
 - `-o, --output-dir`: Output directory for MCAP files (default: `./{dataset_name}_mcap`)
 - `-e, --episodes`: Specific episode indices to download (default: all episodes)
-- `-j, --jobs`: Number of parallel workers (default: min(8, cpu_count // 2))
+- `-j, --jobs`: Cameras sliced and encoded concurrently within one episode (default: min(8, cpu_count // 2))
 
 **Output:**
 
@@ -156,7 +156,7 @@ lerobot2mcap convert ~/.cache/huggingface/lerobot/pusht -o ./mcap_output
 # Convert specific episodes only
 lerobot2mcap convert /path/to/dataset -o ./mcap_output -e 0 1 2
 
-# Parallel conversion with 8 workers
+# Encode up to 8 cameras of an episode concurrently
 lerobot2mcap convert /path/to/dataset -o ./mcap_output -j8
 
 # Custom converter functions (advanced)
@@ -168,7 +168,7 @@ lerobot2mcap convert /path/to/dataset -o ./mcap_output -f ./my_converter_functio
 - `input_dir`: Path to LeRobot dataset root (must contain `meta/info.json`)
 - `-o, --output-dir`: Output directory for MCAP files (default: `<input_dir>/mcap_conversion`)
 - `-e, --episodes`: Specific episode indices to convert (default: all episodes)
-- `-j, --jobs`: Number of parallel workers (default: min(8, cpu_count // 2))
+- `-j, --jobs`: Cameras sliced and encoded concurrently within one episode (default: min(8, cpu_count // 2))
 - `-f, --converter-functions`: Path to custom converter functions YAML (default: built-in `configs/converter_functions.yaml`)
 
 **Performance (50 episodes, 16-core CPU):**
@@ -183,19 +183,17 @@ lerobot2mcap convert /path/to/dataset -o ./mcap_output -f ./my_converter_functio
 
 1. Reads `meta/info.json` to understand dataset structure (merged files in v3.0)
 2. Calculates total chunks (`ceil(total_episodes / chunks_size)`)—ignored for v3.0 merged files
-3. For each episode (parallelized with `-j` workers):
+3. For each episode, sequentially (`-j` parallelises the cameras inside it):
    - Slices parquet rows by episode index range (v3.0)
-   - Slices video by timestamps per episode (v3.0) using ffmpeg
+   - Slices video by timestamps per episode (v3.0) using ffmpeg, re-encoded as all-keyframe H.264
    - Writes temp files:
      - `robot/actions.parquet` → `/robot/actions/data`
      - `robot/states.parquet` → `/robot/states/data`
-     - `observation/images/{cam}.mp4` → `/observation/images/{cam}/video`
+     - `observation/images/{cam}.h264` → `/observation/images/{cam}/video`
    - Generates temp config (Pydantic) and calls `tabular2mcap` with `strip_file_suffix=True`
    - Saves MCAP directly to output directory as `episode_XXX.mcap`
-4. After all episodes finish:
-   - Saves a single `config_{output_dir_name}.yaml` in output directory
-   - Copies config to `configs/config.yaml` as reference
-5. Skips episodes with missing files (warns in logs)
+4. After all episodes finish, saves a single `config_{output_dir_name}.yaml` in the output directory
+5. Skips episodes that fail (warned and listed in the summary) and reports failure, so a partial output is never mistaken for a complete one
 
 ### Topic layout (v3.0 example)
 
@@ -243,18 +241,21 @@ mv $LOG_FILE ~/.cache/huggingface/lerobot/${HF_USER}/my-dataset/recording.log
 
 ### Expected Dataset Structure
 
-The converter automatically detects and supports both LeRobot v2.0, v2.1 dataset formats, and has partial support for the v3 dataset format. Example input file structures are given below for v3 and v2.1 (very similar to v2).
+The converter automatically detects LeRobot v3.0 (its primary target) as well as v2.0 and v2.1 from `meta/info.json`. Example input file structures are given below for v3 and v2.1 (very similar to v2).
 
 #### LeRobot v3 Format
 
-Im Lerobot dataset v3.0 multiple episodes are concatenated into the same files, based on episode and MP4 file size limits defined in the lerobot codebase. The following file structure is an example only; the method and conditions, and recording parameters that data is collected with will dicate how many episodes are merged per file. It should be noted that the seperation of these files back into seperate episodes is not yet supported.
+In LeRobot v3.0 several episodes are concatenated into the same files, rolling over at the parquet and MP4 size limits recorded in `info.json`. The structure below is an example; how many episodes share a file depends on the recording. The converter reads `meta/episodes/` to find each episode's row range and video timestamp range and writes one MCAP per episode.
 
 ```
 dataset_root/
 ├── meta/
 │   ├── info.json           # Dataset metadata (includes total_episodes)
-│   ├── episodes.jsonl
-│   └── tasks.jsonl
+│   ├── stats.json
+│   ├── tasks.parquet
+│   └── episodes/
+│       └── chunk-000/
+│           └── file-000.parquet  # per-episode row ranges and video timestamp ranges
 ├── data/
 │   └── chunk-000/
 │       ├── file-000.parquet  # Episode 0-3
@@ -317,11 +318,9 @@ mcap_output/
 
 Each MCAP file contains:
 
-- **Robot data** from the episode's parquet file (topic: `robot_data`)
-- **Video streams** for each camera (topics: `observation/images/front`, `observation/images/external`, etc.)
-- **Terminal logs** as `rcl_interfaces/msg/Log` if `.log` files present (topic: `terminal_log`)
-  - Includes full metadata: log level, timestamp, source file, line number, and message
-  - Supports multi-line log entries (e.g., stack traces)
+- **Robot data** from the episode's parquet rows (topics: `/robot/actions/data`, `/robot/states/data`)
+- **Video streams** for each camera (topics: `/observation/images/{camera}/video`)
+- **Terminal log** as an MCAP attachment when a `.log` file sits in the dataset root
 
 ## How Configuration Works
 
@@ -338,8 +337,8 @@ Each MCAP file contains:
 
    - Tabular mappings pointing to the specific episode's parquet file
    - Video mappings pointing to the specific episode's video files
-   - Log mappings if `.log` files are present
-   - Each config is saved alongside its MCAP file for transparency
+   - An attachment mapping for a `.log` file in the dataset root
+   - One config is saved next to the MCAP files, named after the output directory
 
 3. **tabular2mcap** uses each generated config to convert the episode to MCAP
 
@@ -356,16 +355,12 @@ functions:
       {
         "timestamp": {
           "sec": {{ (timestamp) | int }},
-          "nsec": {{ ((timestamp % 1) * 1_000_000_000) | int }}
+          "nanosec": {{ ((timestamp % 1) * 1_000_000_000) | int }}
         }
       }
 ```
 
 **Note**: Log parsing is handled automatically by tabular2mcap's `LogConverter` - no converter function needed.
-
-## Future Work
-
-Lerobot dataset v3.0 file splitting into individual episodes is yet to be added to this repository.
 
 ## Development
 

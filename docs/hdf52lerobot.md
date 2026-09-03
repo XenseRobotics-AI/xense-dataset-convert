@@ -35,7 +35,7 @@ Two 72-second episodes (11 streams each, 1.1 GB of source) convert in ~14 s and
 land at ~118 MB.
 
 Useful flags: `--config` (rule file, default
-[`configs/hdf52lerobot.yaml`](configs/hdf52lerobot.yaml)), `--fps`,
+[`configs/hdf52lerobot.yaml`](../configs/hdf52lerobot.yaml)), `--fps`,
 `--quat-order`, `--pair`, `--max-sync-gap-frames`, `--warn-sync-gap-frames`,
 `--crf`, `--gop`, `--preset`, `--workers`, `--overwrite`.
 
@@ -58,7 +58,7 @@ Useful flags: `--config` (rule file, default
 │   ├── info.json                          # fps, robot_type, features
 │   ├── stats.json                         # min/max/mean/std/count per feature
 │   ├── tasks.parquet
-│   └── episodes/chunk-000/file-000.parquet
+│   └── episodes/chunk-000/file-000.parquet  # per-episode ranges + stats/* blocks
 ├── data/chunk-000/file-000.parquet        # episodes aggregated, rolls at 100 MB
 └── videos/observation.images.<key>/chunk-000/file-000.mp4   # rolls at 200 MB
 ```
@@ -99,7 +99,7 @@ Useful flags: `--config` (rule file, default
 
 ## Extending it (new cameras, head pose)
 
-[`configs/hdf52lerobot.yaml`](configs/hdf52lerobot.yaml) holds the filename rules
+[`configs/hdf52lerobot.yaml`](../configs/hdf52lerobot.yaml) holds the filename rules
 and the `state_layout`. A new camera is one more `kind: video` rule. A rig that
 also tracks the head becomes the 29-dim layout by adding a `kind: pose` rule for
 it and listing that key in `state_layout` — no code change.

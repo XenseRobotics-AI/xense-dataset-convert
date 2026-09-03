@@ -304,6 +304,37 @@ def test_episodes_parquet_locates_every_video(dataset: Path):
     assert frame[f"{prefix}/to_timestamp"].tolist() == [FRAMES / FPS, 2 * FRAMES / FPS]
 
 
+def test_episodes_parquet_carries_per_episode_stats(dataset: Path):
+    """LeRobot's dataset tools re-aggregate ``stats/*`` when episodes are edited."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(dataset / "meta" / "episodes" / "chunk-000" / "file-000.parquet")
+    info = json.loads((dataset / "meta" / "info.json").read_text())
+    for feature in info["features"]:
+        for stat in ("min", "max", "mean", "std", "count"):
+            assert f"stats/{feature}/{stat}" in table.column_names, (feature, stat)
+
+    assert table.schema.field("stats/observation.state/count").type == pa.list_(pa.int64())
+    assert table.schema.field("stats/observation.state/mean").type == pa.list_(pa.float64())
+    assert table.schema.field("stats/observation.images.head/mean").type == pa.list_(
+        pa.list_(pa.list_(pa.float64()))
+    )
+
+    rows = table.to_pylist()
+    assert [row["stats/observation.state/count"] for row in rows] == [[FRAMES], [FRAMES]]
+    assert len(rows[0]["stats/observation.state/mean"]) == 20
+    assert np.array(rows[0]["stats/observation.images.head/mean"]).shape == (3, 1, 1)
+    # Frame 0 of episode 1 has global index FRAMES, so its per-episode minimum says so.
+    assert rows[1]["stats/index/min"] == [float(FRAMES)]
+
+    # Per-episode blocks re-aggregate to the dataset-wide stats.json.
+    stats = json.loads((dataset / "meta" / "stats.json").read_text())
+    means = np.array([row["stats/observation.state/mean"] for row in rows])
+    counts = np.array([row["stats/observation.state/count"] for row in rows])
+    assert np.allclose((means * counts).sum(axis=0) / counts.sum(), stats["observation.state"]["mean"])
+
+
 def test_videos_are_constant_frame_rate(dataset: Path):
     import av
 

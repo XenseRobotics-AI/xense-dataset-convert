@@ -1,0 +1,17 @@
+# Reproducible environment for this repository:
+#
+#   conda env create -f environment.yml
+#   conda activate xense-convert
+#
+# conda only provides the interpreter and the `ffmpeg` binary that lerobot2mcap
+# shells out to; every Python dependency comes from pyproject.toml via pip, so
+# there is a single place to keep versions in sync.
+name: xense-convert
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - ffmpeg
+  - pip
+  - pip:
+      - -e .[dev]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from pathlib import Path
@@ -132,7 +133,12 @@ class McapToLeRobotConverter:
         try:
             from lerobot.datasets.lerobot_dataset import LeRobotDataset
         except ImportError as error:
-            raise ImportError("lerobot==0.4.1 is required to write the dataset") from error
+            raise ImportError("lerobot is required to write the dataset") from error
+        # lerobot keeps a reference to the `features` dict it is given and writes
+        # each video's probed `info` block into it after the first episode is
+        # saved. Hand it a copy so `_write_episode`'s layout check keeps comparing
+        # against the layout we built, not against lerobot's annotated one.
+        kwargs["features"] = copy.deepcopy(kwargs["features"])
         return LeRobotDataset.create(**kwargs)
 
     def convert(self) -> Path:
@@ -185,12 +191,14 @@ class McapToLeRobotConverter:
 
         max_gap_ns = int(self.config.max_sync_gap_frames * 1_000_000_000 / fps)
         for frame_index, state in enumerate(episode.states):
+            # No "timestamp" key: lerobot's validate_frame rejects it as an extra
+            # feature, and add_frame derives frame_index / fps itself, which is
+            # exactly the value we would pass.
             frame: dict[str, Any] = {
                 "observation.state": state.value.copy(),
                 "action": nearest_value(
                     episode.actions, state.timestamp_ns, max_gap_ns, "action"
                 ).copy(),
-                "timestamp": frame_index / fps,
                 "task": self.config.task,
             }
             for feature_name, images in episode.videos.items():

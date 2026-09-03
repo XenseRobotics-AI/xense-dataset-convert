@@ -138,7 +138,7 @@ def test_converts_multiple_mcap_files_to_one_dataset(tmp_path):
     assert dataset.kwargs["use_videos"] is True
     assert len(dataset.episodes) == 2
     assert len(dataset.episodes[0]) == 3
-    assert dataset.episodes[0][1]["timestamp"] == pytest.approx(1 / 30)
+    assert "timestamp" not in dataset.episodes[0][1]  # lerobot derives it; passing it is rejected
     assert dataset.episodes[0][1]["task"] == "pick"
     assert dataset.episodes[0][1]["action"].tolist() == [3.0]
     assert dataset.episodes[0][1]["observation.images.head"][0, 0, 0] == 1

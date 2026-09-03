@@ -12,27 +12,39 @@ version = "0.3.1"
 description = "Robot dataset format converters: LeRobot <-> MCAP, LeRobot -> Zarr, raw UMI HDF5 -> LeRobot"
 readme = "README.md"
 
-# Matches xense-taccap-lerobot, the environment this is vendored into.
+# lerobot 0.5+ and 0.6+ both require 3.12, as does the xense-taccap-lerobot fork.
 requires-python = ">=3.12"
 
-# The union of what the four converters need, aligned with xense-taccap-lerobot
-# (a lerobot fork versioned 0.5.1+xtac.0.0.6, requiring Python >=3.12).
+# The union of what the four converters need.
 #
-# lerobot: the old `==0.4.1` pin would have downgraded that fork on install.
-# `>=0.5.1` accepts it -- PEP 440 orders a local-version segment above the plain
-# release -- and `<0.6` keeps a lerobot-less environment on the same 0.5.x line
-# the fork is built from, rather than resolving to the 0.6.x now on PyPI.
+# lerobot: `lerobot[dataset]>=0.5.1,<0.7`. Every release in that range reads and
+# writes the same on-disk format (CODEBASE_VERSION "v3.0"); the cap tracks the
+# Python API the three lerobot-backed converters call -- LeRobotDataset for
+# reading, LeRobotDataset.create / add_frame / save_episode / finalize for
+# writing -- which 0.6 already reorganised once. 0.5.1 and 0.6.1 are both
+# exercised end to end (README, "Which lerobot"); bump the cap after testing a
+# new minor. The [dataset] extra is required from 0.6 on, where datasets,
+# pyarrow, pandas and torchcodec left lerobot's core dependencies; 0.5.x ignores
+# it. `>=0.5.1` still accepts the xense-taccap-lerobot fork (0.5.1+xtac.0.0.6):
+# PEP 440 sorts a local version above the plain release.
 #
-# av and numpy follow the fork's own ranges rather than tightening past them:
-# `av==15.1.0` would have blocked the fork from moving anywhere inside 15.x.
+# av and numpy stay on the ranges lerobot itself declares rather than tightening
+# past them: `av==15.1.0` would block lerobot from moving anywhere inside 15.x.
 #
-# Only lerobot2mcap and lerobot2zarr import lerobot; mcap2lerobot and
-# hdf52lerobot write the v3.0 layout themselves. Installing this distribution
-# still pulls lerobot's torch stack for all four -- a deliberate trade for a
-# single, no-extras install.
+# lerobot2mcap, lerobot2zarr and mcap2lerobot use lerobot's Python API
+# (LeRobotDataset for reading, LeRobotDataset.create for writing); hdf52lerobot
+# writes the v3.0 layout itself. Installing this distribution pulls lerobot's
+# torch stack for all four -- a deliberate trade for a single, no-extras install.
+#
+# tqdm is imported directly by lerobot2mcap; it also arrives via tabular2mcap and
+# lerobot, but a direct import gets a direct declaration.
+#
+# The `ffmpeg` binary is a system requirement (lerobot2mcap shells out to it);
+# see README for the conda recipe.
 dependencies = [
-  "lerobot>=0.5.1,<0.6",
+  "lerobot[dataset]>=0.5.1,<0.7",
   "tabular2mcap[protobuf]==0.1.12",
+  "tqdm>=4.60",
   "av>=15.0.0,<16.0.0",
   "spdlog>=2.0.0",
   "numpy>=1.26.4",
@@ -57,6 +69,10 @@ lerobot2zarr = "lerobot2zarr.zarr_cli:main"
 mcap2lerobot = "mcap2lerobot.cli:main"
 hdf52lerobot = "hdf52lerobot.cli:main"
 
+[project.optional-dependencies]
+# `pip install -e .[dev]` -- what the test suite and the CI lint job need.
+dev = ["pytest>=8", "ruff"]
+
 [tool.setuptools]
 packages = [
   "lerobot2mcap",
@@ -73,5 +89,11 @@ packages = [
 [tool.uv]
 package = true
 
+[tool.pytest.ini_options]
+# Make the packages importable without installing the project, and without
+# depending on which test module happens to be collected first.
+pythonpath = ["."]
+testpaths = ["tests"]
+
 [dependency-groups]
-hardware = ["lerobot[feetech]>=0.3.3"]
+hardware = ["lerobot[feetech]>=0.5.1,<0.7"]

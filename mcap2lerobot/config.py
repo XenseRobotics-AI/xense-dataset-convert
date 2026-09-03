@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+DEFAULT_TASK = "Converted from MCAP"
+DEFAULT_ROBOT_TYPE = "mcap"
+
 
 def normalize_topic(topic: str) -> str:
     return topic.strip("/")
@@ -11,7 +14,14 @@ def normalize_topic(topic: str) -> str:
 
 @dataclass(frozen=True)
 class ConverterConfig:
-    """Settings for MCAP files produced by this repository's former exporter."""
+    """Settings for MCAP files produced by this repository's ``lerobot2mcap``.
+
+    ``fps``, ``task`` and ``robot_type`` are overrides. Left at ``None``, the
+    values lerobot2mcap embedded in the MCAP (the source dataset's
+    ``meta/info.json`` and the episode's task texts) are used; only an MCAP that
+    carries none falls back to the module defaults, with ``fps`` then inferred
+    from the state timestamps.
+    """
 
     state_topic: str = "robot/states/data"
     action_topic: str = "robot/actions/data"
@@ -21,8 +31,8 @@ class ConverterConfig:
     video_topic_suffix: str = "/video"
     fps: int | None = None
     max_sync_gap_frames: float = 1.5
-    task: str = "Converted from MCAP"
-    robot_type: str = "mcap"
+    task: str | None = None
+    robot_type: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "state_topic", normalize_topic(self.state_topic))

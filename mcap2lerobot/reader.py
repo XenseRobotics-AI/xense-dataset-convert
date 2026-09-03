@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from array import array
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -14,11 +15,19 @@ import numpy as np
 from .config import ConverterConfig, normalize_topic
 from .video import VideoStreamDecoder
 
+# Attachment names lerobot2mcap uses for the source dataset's metadata. They are
+# the files' paths relative to its staging directory, which is how tabular2mcap
+# names attachments; matched by suffix so a prefix added by another tool is fine.
+LEROBOT_INFO_ATTACHMENT = "meta/info.json"
+LEROBOT_EPISODE_ATTACHMENT = "meta/episode.json"
+
 
 @dataclass(frozen=True)
 class TimedArray:
     timestamp_ns: int
     value: np.ndarray
+    task_index: int | None = None
+    """The row's ``task_index`` column, when the message carries it."""
 
 
 @dataclass(frozen=True)
@@ -33,6 +42,11 @@ class EpisodeData:
     states: list[TimedArray] = field(default_factory=list)
     actions: list[TimedArray] = field(default_factory=list)
     videos: dict[str, list[TimedImage]] = field(default_factory=dict)
+    info: dict[str, Any] | None = None
+    """The source dataset's ``meta/info.json``, when lerobot2mcap attached it."""
+    episode_meta: dict[str, Any] | None = None
+    """lerobot2mcap's per-episode manifest: ``episode_index``, ``length``,
+    ``tasks`` and ``task_index_to_task``."""
 
 
 def get_message_field(message: Any, field_name: str) -> Any:
@@ -43,6 +57,13 @@ def get_message_field(message: Any, field_name: str) -> Any:
     if not hasattr(message, field_name):
         raise KeyError(field_name)
     return getattr(message, field_name)
+
+
+def optional_int_field(message: Any, field_name: str) -> int | None:
+    try:
+        return int(get_message_field(message, field_name))
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def as_vector(value: Any, field_name: str) -> np.ndarray:
@@ -64,6 +85,32 @@ def as_bytes(value: Any) -> bytes:
     if isinstance(value, array):
         return value.tobytes()
     return bytes(value)
+
+
+def read_lerobot_attachments(reader: Any) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Return ``(info, episode_meta)`` from the attachments lerobot2mcap writes.
+
+    Either is ``None`` when the MCAP does not carry it, which is what an MCAP
+    from an older lerobot2mcap or from another tool looks like.
+    """
+    info = episode_meta = None
+    for attachment in reader.iter_attachments():
+        name = str(attachment.name).replace("\\", "/")
+        if name.endswith(LEROBOT_INFO_ATTACHMENT):
+            info = _parse_json_attachment(attachment)
+        elif name.endswith(LEROBOT_EPISODE_ATTACHMENT):
+            episode_meta = _parse_json_attachment(attachment)
+    return info, episode_meta
+
+
+def _parse_json_attachment(attachment: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(bytes(attachment.data).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ValueError(f"Attachment {attachment.name!r} is not valid JSON: {error}") from error
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Attachment {attachment.name!r} must hold a JSON object")
+    return parsed
 
 
 class McapEpisodeReader:
@@ -103,6 +150,7 @@ class McapEpisodeReader:
                                 get_message_field(decoded, self.config.state_field),
                                 self.config.state_field,
                             ),
+                            task_index=optional_int_field(decoded, "task_index"),
                         )
                     )
                     continue
@@ -131,6 +179,8 @@ class McapEpisodeReader:
                 episode.videos.setdefault(feature_name, []).append(
                     TimedImage(message.log_time, image)
                 )
+
+            episode.info, episode.episode_meta = read_lerobot_attachments(reader)
 
         self._validate(episode)
         return episode

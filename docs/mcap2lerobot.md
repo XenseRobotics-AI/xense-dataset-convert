@@ -23,7 +23,14 @@ H.264, H.265, VP9, or AV1 packets.
 
 The state stream is the output timeline. Actions and camera frames are matched
 to each state timestamp using nearest-neighbor synchronization with a bounded
-maximum gap.
+maximum gap. The pairing is decided before anything is written, so an episode
+that is out of sync fails without leaving a half-written dataset.
+
+Reading is done in two passes so memory does not grow with episode length: the
+first pass keeps the state and action vectors plus each camera's packet
+timestamps, the second decodes only the packets the pairing needs and hands
+them to lerobot one state at a time. Design notes, with measurements, are in
+[`mcap2lerobot/README.md`](../mcap2lerobot/README.md).
 
 MCAP files written by `lerobot2mcap` also carry two attachments,
 `meta/info.json` (the source dataset's metadata, verbatim) and

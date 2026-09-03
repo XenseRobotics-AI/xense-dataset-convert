@@ -3,7 +3,7 @@
 import argparse
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 
 import numpy as np
 
@@ -291,7 +291,6 @@ def _split_av1_frames(bitstream: bytes) -> list[bytes]:
         # Check if this frame contains sequence header OBU
         if frame_data and (frame_data[0] & 0x78) >> 3 == 1:  # OBU_SEQUENCE_HEADER
             # Extract sequence header for prepending to other frames
-            obu_type = (frame_data[0] & 0x78) >> 3
             has_size = (frame_data[0] & 0x02) != 0
             if has_size and len(frame_data) > 1:
                 # Find OBU size using LEB128
@@ -405,7 +404,8 @@ def convert_dataset(
         episodes: List of episode indices to convert (None = all episodes)
         intra_workers: Per-episode internal parallelism (default: 8)
     Returns:
-        True if conversion succeeded, False otherwise
+        True only when every requested episode was converted; False when any
+        episode was skipped or the run failed outright (the cause is logged).
     """
     logger.info(f"Converting dataset: {dataset_root}")
     if episodes:
@@ -435,7 +435,7 @@ def convert_dataset(
         return success
 
     except Exception as e:
-        logger.error(f"Conversion failed: {e}")
+        logger.error(f"Conversion failed: {type(e).__name__}: {e}")
         return False
 
 

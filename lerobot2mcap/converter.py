@@ -18,9 +18,6 @@ logger = get_logger("converter")
 # Display formatting constants
 SEPARATOR_WIDTH = 60
 
-# Project root (for writing back the latest example config)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
 
 class LeRobotConverter:
     """Main converter orchestrator that manages the conversion process."""
@@ -101,7 +98,10 @@ class LeRobotConverter:
             chunks: List of chunk indices to convert (None = all chunks)
             episodes: List of episode indices to convert (None = all episodes)
         Returns:
-            True if conversion succeeded, False otherwise
+            True only when every requested episode was converted. Episodes that
+            fail are skipped with a warning and listed in the summary, so a
+            partial result is still on disk, but it is reported as a failure:
+            a caller that gets True can rely on the output being complete.
         """
         logger.info("=" * SEPARATOR_WIDTH)
         logger.info("LeRobot to MCAP Conversion")
@@ -152,6 +152,7 @@ class LeRobotConverter:
         # Convert each episode
         success_count = 0
         fail_count = 0
+        failed: list[str] = []
         last_episode_config = None
 
         # Episodes are processed serially: per-episode work itself is already
@@ -175,6 +176,7 @@ class LeRobotConverter:
                     f"Skipping episode {episode_idx} in chunk {chunk_idx}: {e}"
                 )
                 fail_count += 1
+                failed.append(f"{episode_idx} ({type(e).__name__}: {e})")
 
         # Save a single config file named after output directory
         if last_episode_config:
@@ -189,9 +191,6 @@ class LeRobotConverter:
                 )
             logger.info(f"Saved config: {config_path}")
 
-            # Also update example config in configs/
-            self._update_example_config(config_path)
-
         # Summary
         logger.info("=" * SEPARATOR_WIDTH)
         logger.info("Conversion Summary")
@@ -199,10 +198,14 @@ class LeRobotConverter:
         logger.info(f"Successfully converted: {success_count} episodes")
         if fail_count > 0:
             logger.warn(f"Failed/Skipped: {fail_count} episodes")
+            for entry in failed:
+                logger.warn(f"  episode {entry}")
         logger.info(f"Output directory: {output_dir}")
         logger.info("=" * SEPARATOR_WIDTH)
 
-        return success_count > 0
+        # Partial output is not success: the facade and the CLI exit code both
+        # key off this, and a pipeline must not treat 1-of-100 as converted.
+        return fail_count == 0 and success_count > 0
 
     def _convert_episode(
         self, episode_idx: int, chunk_idx: int, output_dir: Path
@@ -593,18 +596,6 @@ class LeRobotConverter:
         state_path = state_dir / "states.parquet"
         state_df.to_parquet(state_path, index=False)
         logger.debug(f"Saved observation state to {state_path}")
-
-    def _update_example_config(self, config_path: Path) -> None:
-        """
-        Copy the latest generated config to configs/config.yaml for reference.
-        """
-        dest = PROJECT_ROOT / "configs" / "config.yaml"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.copy2(config_path, dest)
-            logger.info(f"Updated example config: {dest}")
-        except Exception as e:
-            logger.warn(f"Failed to update example config: {e}")
 
     def get_conversion_plan(self, chunks: list[int] | None = None) -> str:
         """

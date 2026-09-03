@@ -49,11 +49,13 @@ jobs:
       # three converters under test import their heavy dependencies lazily inside
       # functions, so nothing here needs lerobot (and therefore torch). spdlog is
       # the exception -- lerobot2zarr/logger.py imports it at module level, so the
-      # zarr suite cannot even be collected without it.
+      # zarr suite cannot even be collected without it. mcap (pure Python) lets
+      # the attachment-parsing test write and read a real MCAP file.
       - name: Install test dependencies
         run: >
           pip install --upgrade pip pytest numpy pandas pyarrow PyYAML h5py
           "av>=15.0.0,<16.0.0" "zarr>=2.18,<3" "numcodecs>=0.12,<0.16" "spdlog>=2.0.0"
+          "mcap>=1.3.0"
 
       # lerobot2mcap has no unit suite: tests/ carries a standalone MCAP validator
       # and an encoder benchmark, both of which need a real dataset on disk.

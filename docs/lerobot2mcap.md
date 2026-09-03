@@ -8,6 +8,7 @@ Convert LeRobot datasets to MCAP format with automatic configuration generation 
 - **Episode-based conversion**: Converts each episode to a separate MCAP file in its own directory
 - **Chunk-aware**: Handles datasets organized in chunks (supports datasets with 1000+ episodes)
 - **Multi-video support**: Auto-detects and converts all video streams
+- **Round-trip metadata**: every episode MCAP carries `meta/info.json` (the dataset's metadata, verbatim) and `meta/episode.json` (episode index, length, task texts) as attachments, which `mcap2lerobot` reads back to restore names, dtypes, fps, robot type, codec and tasks
 - **Terminal log support**: a `.log` file in the dataset root is carried into every episode's MCAP as an attachment
 - **ROS2 format**: Outputs ROS2-compatible MCAP files (configurable via metadata)
 - **v3.0-first**: Handles merged parquet+video with per-episode slicing (rows + timestamp-based video trim)
@@ -320,6 +321,7 @@ Each MCAP file contains:
 
 - **Robot data** from the episode's parquet rows (topics: `/robot/actions/data`, `/robot/states/data`)
 - **Video streams** for each camera (topics: `/observation/images/{camera}/video`)
+- **Source metadata** as attachments: `meta/info.json` and, for v3.0 datasets, `meta/episode.json`
 - **Terminal log** as an MCAP attachment when a `.log` file sits in the dataset root
 
 ## How Configuration Works

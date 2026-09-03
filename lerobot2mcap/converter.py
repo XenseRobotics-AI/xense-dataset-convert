@@ -1,5 +1,6 @@
 """Main converter orchestrator for LeRobot to MCAP conversion."""
 
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -345,6 +346,19 @@ class LeRobotConverter:
                 episode_files["to_index"],
                 temp_path,
                 episode_idx,
+            )
+
+            # Carry the source metadata along as MCAP attachments, so that
+            # mcap2lerobot restores feature names, dtypes, fps, robot_type, the
+            # video codec and the task texts instead of guessing them. The
+            # attachment names are these paths relative to temp_path.
+            meta_dir = temp_path / "meta"
+            meta_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.dataset_info.info_json_path, meta_dir / "info.json")
+            (meta_dir / "episode.json").write_text(
+                json.dumps(self.dataset_info.episode_manifest(episode_idx), indent=2, ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
             )
 
             # Extract video slices for each camera

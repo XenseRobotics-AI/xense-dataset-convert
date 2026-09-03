@@ -6,7 +6,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from .config import ConverterConfig
+from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, ConverterConfig
 from .converter import McapToLeRobotConverter
 
 
@@ -18,9 +18,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("inputs", nargs="+", help="MCAP files or directories")
     parser.add_argument("-o", "--output", required=True, help="New dataset directory")
     parser.add_argument("--repo-id", default=None, help="LeRobot repository ID")
-    parser.add_argument("--fps", type=int, default=None, help="Override inferred FPS")
-    parser.add_argument("--task", default="Converted from MCAP")
-    parser.add_argument("--robot-type", default="mcap")
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=None,
+        help="Override the fps embedded by lerobot2mcap (else inferred from state timestamps)",
+    )
+    parser.add_argument(
+        "--task",
+        default=None,
+        help=(
+            "Task text for every frame. Default: the tasks lerobot2mcap embedded, "
+            f"else {DEFAULT_TASK!r}"
+        ),
+    )
+    parser.add_argument(
+        "--robot-type",
+        default=None,
+        help=(
+            "robot_type for meta/info.json. Default: the value lerobot2mcap embedded, "
+            f"else {DEFAULT_ROBOT_TYPE!r}"
+        ),
+    )
     parser.add_argument("--state-topic", default="robot/states/data")
     parser.add_argument("--action-topic", default="robot/actions/data")
     parser.add_argument("--state-field", default="observation_state")

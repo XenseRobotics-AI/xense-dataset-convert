@@ -25,6 +25,15 @@ The state stream is the output timeline. Actions and camera frames are matched
 to each state timestamp using nearest-neighbor synchronization with a bounded
 maximum gap.
 
+MCAP files written by `lerobot2mcap` also carry two attachments,
+`meta/info.json` (the source dataset's metadata, verbatim) and
+`meta/episode.json` (the episode's index, length and task texts). When they are
+present the converter restores what the ROS messages alone cannot say: the
+`observation.state` / `action` component names and dtype, `fps`, `robot_type`,
+the video codec, and each frame's task text. `--fps`, `--task` and
+`--robot-type` override them; an MCAP without the attachments gets the
+generated names and the defaults listed under limitations.
+
 ## Installation
 
 ```bash
@@ -74,10 +83,11 @@ Run `mcap2lerobot --help` for all options.
 - Only ROS2 CDR MCAP messages are decoded.
 - One MCAP file must represent exactly one episode.
 - State and action features are one-dimensional numeric arrays.
-- Task text, robot type, and joint names cannot be recovered from the current
-  MCAP files, so task and robot type come from CLI options and vector names are
-  generated as `state_0`, `action_0`, and so on.
+- For MCAP files without the `meta/info.json` / `meta/episode.json`
+  attachments (written by `lerobot2mcap` before 0.3.2, or by other tools), task
+  text and robot type come from CLI options or the defaults `Converted from
+  MCAP` / `mcap`, vector names are generated as `state_0`, `action_0`, and so
+  on, and lerobot encodes video with its own default codec.
+- Per-episode statistics are recomputed by lerobot; `meta/stats.json` of the
+  source is not carried over.
 - The output directory must not already exist.
-
-Embedding the original LeRobot feature metadata in future MCAP files would make
-the conversion fully reversible, including joint names and task metadata.

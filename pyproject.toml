@@ -25,14 +25,20 @@ requires-python = ">=3.12"
 #
 # av and numpy follow the fork's own ranges rather than tightening past them:
 # `av==15.1.0` would have blocked the fork from moving anywhere inside 15.x.
+# lerobot2mcap, lerobot2zarr and mcap2lerobot use lerobot's Python API
+# (LeRobotDataset for reading, LeRobotDataset.create for writing); hdf52lerobot
+# writes the v3.0 layout itself. Installing this distribution pulls lerobot's
+# torch stack for all four -- a deliberate trade for a single, no-extras install.
 #
-# Only lerobot2mcap and lerobot2zarr import lerobot; mcap2lerobot and
-# hdf52lerobot write the v3.0 layout themselves. Installing this distribution
-# still pulls lerobot's torch stack for all four -- a deliberate trade for a
-# single, no-extras install.
+# tqdm is imported directly by lerobot2mcap; it also arrives via tabular2mcap and
+# lerobot, but a direct import gets a direct declaration.
+#
+# The `ffmpeg` binary is a system requirement (lerobot2mcap shells out to it);
+# see README for the conda recipe.
 dependencies = [
   "lerobot>=0.5.1,<0.6",
   "tabular2mcap[protobuf]==0.1.12",
+  "tqdm>=4.60",
   "av>=15.0.0,<16.0.0",
   "spdlog>=2.0.0",
   "numpy>=1.26.4",
@@ -57,6 +63,10 @@ lerobot2zarr = "lerobot2zarr.zarr_cli:main"
 mcap2lerobot = "mcap2lerobot.cli:main"
 hdf52lerobot = "hdf52lerobot.cli:main"
 
+[project.optional-dependencies]
+# `pip install -e .[dev]` -- what the test suite and the CI lint job need.
+dev = ["pytest>=8", "ruff"]
+
 [tool.setuptools]
 packages = [
   "lerobot2mcap",
@@ -72,6 +82,12 @@ packages = [
 
 [tool.uv]
 package = true
+
+[tool.pytest.ini_options]
+# Make the packages importable without installing the project, and without
+# depending on which test module happens to be collected first.
+pythonpath = ["."]
+testpaths = ["tests"]
 
 [dependency-groups]
 hardware = ["lerobot[feetech]>=0.3.3"]

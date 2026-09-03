@@ -46,7 +46,10 @@ def build_features(
         features[name] = {"dtype": "int64", "names": None, "shape": [1]}
     features["timestamp"] = {"dtype": "float32", "names": None, "shape": [1]}
     if config.keep_source_timestamp:
-        features[SOURCE_TIMESTAMP] = {"dtype": "float64", "names": None, "shape": [1]}
+        # int64 nanoseconds, not float64 seconds: LeRobot's torch transform turns
+        # float scalars into float32, which cannot hold a Unix time to better
+        # than a few seconds. int64 survives that path exactly.
+        features[SOURCE_TIMESTAMP] = {"dtype": "int64", "names": None, "shape": [1]}
 
     for stream in episode.videos.values():
         features[stream.feature] = {

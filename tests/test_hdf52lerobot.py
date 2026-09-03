@@ -27,7 +27,7 @@ from hdf52lerobot.geometry import (  # noqa: E402
     to_wxyz,
 )
 from hdf52lerobot.source import read_episode  # noqa: E402
-from hdf52lerobot.stats import estimate_num_samples  # noqa: E402
+from hdf52lerobot.stats import StatsAccumulator, estimate_num_samples  # noqa: E402
 from hdf52lerobot.source import GripperStream, PoseStream, SourceEpisode, VideoStream  # noqa: E402
 from hdf52lerobot.sync import build_sync, nearest_indices, uniform_grid  # noqa: E402
 
@@ -261,6 +261,30 @@ def test_action_is_the_next_state():
     assert np.array_equal(actions[-1], states[-1])
 
 
+def test_image_stats_from_running_moments_match_a_direct_reduction():
+    from hdf52lerobot.stats import _prepare_image, reduce_images
+
+    rng = np.random.default_rng(1)
+    frames = [rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8) for _ in range(9)]
+    accumulator = StatsAccumulator()
+    accumulator.add_episode({}, {"cam": frames[:4]})
+    accumulator.add_episode({}, {"cam": frames[4:]})
+    streamed = accumulator.finalize()["cam"]
+    direct = reduce_images([_prepare_image(frame) for frame in frames])
+    for stat in ("min", "max", "mean", "std"):
+        assert np.allclose(streamed[stat], direct[stat], atol=1e-9), stat
+    assert streamed["count"] == direct["count"] == [9]
+
+
+def test_downsample_hwc_returns_a_contiguous_copy_at_lerobot_size():
+    from hdf52lerobot.stats import _prepare_image, downsample_hwc
+
+    frame = np.zeros((700, 400, 3), dtype=np.uint8)
+    small = downsample_hwc(frame)
+    assert small.shape == (175, 100, 3) and small.flags["C_CONTIGUOUS"] and small.base is None
+    assert _prepare_image(small).shape == (3, 175, 100)  # a no-op resize afterwards
+
+
 def test_estimate_num_samples_matches_lerobot():
     assert estimate_num_samples(10) == 10
     assert estimate_num_samples(1000) == 177
@@ -446,11 +470,11 @@ def test_grid_conversion_writes_source_timestamps_and_sources_manifest(recording
     output = Hdf5ToLeRobotConverter([recording], tmp_path / "grid", config).convert()
 
     info = json.loads((output / "meta" / "info.json").read_text())
-    assert info["features"]["observation.source_timestamp"] == {"dtype": "float64", "names": None, "shape": [1]}
+    assert info["features"]["observation.source_timestamp"] == {"dtype": "int64", "names": None, "shape": [1]}
     table = pq.read_table(output / "data" / "chunk-000" / "file-000.parquet")
     assert table.column_names[-1] == "observation.source_timestamp"
     stamps = table.column("observation.source_timestamp").to_numpy()
-    assert stamps.dtype == np.float64 and stamps.min() > 1_600_000_000
+    assert stamps.dtype == np.int64 and stamps.min() > 1_600_000_000 * 10**9
     assert np.all(np.diff(stamps[: info["total_frames"] // 2]) >= 0)
     stats = json.loads((output / "meta" / "stats.json").read_text())
     assert stats["observation.source_timestamp"]["count"] == [info["total_frames"]]

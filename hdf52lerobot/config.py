@@ -118,9 +118,10 @@ class ConverterConfig:
 
     keep_source_timestamp: bool = False
     """Also write ``observation.source_timestamp``: the recorder's absolute
-    timestamp (master clock, seconds) of the iteration each frame came from.
-    ``timestamp`` stays ``frame_index / fps`` as LeRobot requires; this column
-    keeps the real time axis alongside it for audits and re-alignment."""
+    timestamp (master clock, int64 nanoseconds since the Unix epoch) of the
+    iteration each frame came from. ``timestamp`` stays ``frame_index / fps``
+    as LeRobot requires; this column keeps the real time axis alongside it for
+    audits and re-alignment."""
 
     max_sync_gap_frames: float = 3.0
     """Hard limit on |stream timestamp - master timestamp|, in frames.

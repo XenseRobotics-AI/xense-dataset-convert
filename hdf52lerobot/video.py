@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import numpy as np
 
@@ -35,7 +35,8 @@ class AppendResult:
     from_timestamp: float
     to_timestamp: float
     samples: list[np.ndarray]
-    """RGB frames pulled aside for statistics, in ``sample_positions`` order."""
+    """RGB frames pulled aside for statistics, in ``sample_positions`` order
+    (after ``sample_transform`` when one was given)."""
 
 
 class VideoAggregator:
@@ -132,6 +133,7 @@ class VideoAggregator:
         source_path: Path,
         indices: np.ndarray,
         sample_positions: Iterable[int] = (),
+        sample_transform: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> AppendResult:
         """Encode ``indices`` of ``source_path`` onto the end of the current file.
 
@@ -141,6 +143,9 @@ class VideoAggregator:
                 non-decreasing so a single decode pass suffices.
             sample_positions: Output positions to also return as RGB arrays,
                 for statistics.
+            sample_transform: Applied to each sampled frame as it is captured,
+                e.g. a downsample, so the full-resolution frame is released
+                immediately instead of being held until the statistics run.
 
         Returns:
             The file coordinates and timestamp span this episode occupies.
@@ -182,7 +187,8 @@ class VideoAggregator:
                         f"{current.width}x{current.height}, expected {self.width}x{self.height}"
                     )
                 if output_position in wanted:
-                    samples[output_position] = current.to_ndarray(format="rgb24")
+                    sample = current.to_ndarray(format="rgb24")
+                    samples[output_position] = sample_transform(sample) if sample_transform else sample
 
                 frame = current.reformat(format=self.config.pix_fmt)
                 # Explicit CFR timing: the source pts are the recorder's jittery

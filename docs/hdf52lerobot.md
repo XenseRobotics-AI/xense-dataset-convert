@@ -89,8 +89,11 @@ Useful flags: `--config` (rule file, default
   `--max-sync-gap-frames` (3.0) the episode is rejected.
 - **Source time**: with `keep_source_timestamp: true` every frame also carries
   `observation.source_timestamp`, the recorder's absolute time (master clock,
-  float64 seconds) of the iteration it came from. `timestamp` stays
-  `frame_index / fps` as LeRobot requires; this column keeps the real time axis.
+  int64 nanoseconds since the Unix epoch) of the iteration it came from.
+  `timestamp` stays `frame_index / fps` as LeRobot requires; this column keeps
+  the real time axis. It is an int64 rather than float64 seconds because
+  LeRobot's torch transform hands float scalars back as float32, which cannot
+  hold a Unix time to better than a few seconds.
 - **Provenance**: `meta/sources.json` records the tool version, the full config,
   the inputs and, per episode, the recording directory, its files, frame counts,
   duplicated / dropped counts and tick offsets. LeRobot ignores extra files

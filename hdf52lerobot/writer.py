@@ -98,8 +98,9 @@ class DatasetWriter:
         """Append one episode's frames; returns its ``meta/episodes`` row.
 
         Args:
-            source_timestamps: Absolute recorder time per frame, required when
-                the features carry ``observation.source_timestamp``.
+            source_timestamps: Absolute recorder time per frame in seconds,
+                required when the features carry ``observation.source_timestamp``;
+                stored as int64 nanoseconds.
         """
         states = np.asarray(states, dtype=np.float32)
         actions = np.asarray(actions, dtype=np.float32)
@@ -127,7 +128,7 @@ class DatasetWriter:
             stamps = np.asarray(source_timestamps, dtype=np.float64)
             if stamps.shape != (length,):
                 raise ValueError(f"expected {length} source timestamps, got shape {stamps.shape}")
-            columns[SOURCE_TIMESTAMP] = stamps
+            columns[SOURCE_TIMESTAMP] = seconds_to_ns(stamps)
         self._buffer.append(columns)
         self._buffer_rows += length
 
@@ -192,8 +193,8 @@ class DatasetWriter:
             "task_index": pa.array(columns["task_index"], type=pa.int64()),
         }
         if self.source_timestamp:
-            fields.append(pa.field(SOURCE_TIMESTAMP, pa.float64(), nullable=False))
-            arrays[SOURCE_TIMESTAMP] = pa.array(columns[SOURCE_TIMESTAMP], type=pa.float64())
+            fields.append(pa.field(SOURCE_TIMESTAMP, pa.int64(), nullable=False))
+            arrays[SOURCE_TIMESTAMP] = pa.array(columns[SOURCE_TIMESTAMP], type=pa.int64())
         table = pa.table(arrays, schema=pa.schema(fields))
         path = self.root / DATA_PATH.format(
             chunk_index=self._data_chunk_index, file_index=self._data_file_index
@@ -335,6 +336,11 @@ class DatasetWriter:
         path = self.root / "meta" / "stats.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(stats, indent=4) + "\n", encoding="utf-8")
+
+
+def seconds_to_ns(seconds: np.ndarray) -> np.ndarray:
+    """Unix seconds (float64) -> int64 nanoseconds, rounded."""
+    return np.round(np.asarray(seconds, dtype=np.float64) * 1e9).astype(np.int64)
 
 
 def _fixed_size_list(values: np.ndarray, list_type):

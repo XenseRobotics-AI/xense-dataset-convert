@@ -21,8 +21,9 @@ task: TacVerse-RDT demonstration
 quat_order: xyzw
 pair: grid
 
-# The recorder's own timestamp of the iteration behind each frame, kept next to
-# LeRobot's frame_index / fps axis so the real time axis is never lost.
+# The recorder's own timestamp of the iteration behind each frame (int64
+# nanoseconds), kept next to LeRobot's frame_index / fps axis so the real time
+# axis is never lost.
 keep_source_timestamp: true
 
 # Per-stream distance between a frame's sample and its grid tick. Stalls up to

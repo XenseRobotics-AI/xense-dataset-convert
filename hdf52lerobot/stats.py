@@ -56,8 +56,22 @@ def _as_rows(values: np.ndarray) -> np.ndarray:
     return array
 
 
+def downsample_hwc(frame_hwc: np.ndarray) -> np.ndarray:
+    """HWC uint8 -> a contiguous copy at the size LeRobot computes stats over.
+
+    Meant to run where a frame is captured: the copy lets the full-resolution
+    frame go, whereas the strided view ``auto_downsample`` returns would keep
+    it alive for as long as the sample is kept.
+    """
+    chw = auto_downsample(np.asarray(frame_hwc).transpose(2, 0, 1))
+    return np.ascontiguousarray(chw.transpose(1, 2, 0))
+
+
 def _prepare_image(frame_hwc: np.ndarray) -> np.ndarray:
-    """HWC uint8 -> the downsampled CHW array LeRobot computes stats over."""
+    """HWC uint8 -> the downsampled CHW array LeRobot computes stats over.
+
+    A no-op resize for frames that already went through ``downsample_hwc``.
+    """
     return auto_downsample(np.asarray(frame_hwc).transpose(2, 0, 1))
 
 
@@ -89,12 +103,50 @@ def reduce_images(frames_chw: list[np.ndarray]) -> dict[str, Any]:
     }
 
 
+class _ImageMoments:
+    """Running per-channel sums over every sampled pixel of one image feature.
+
+    Holding sums instead of frames keeps the accumulator's memory independent
+    of the number of episodes; min/max/mean/std over the sampled pixels come
+    out the same as reducing the frames in one go.
+    """
+
+    def __init__(self) -> None:
+        self.total = np.zeros(3)
+        self.total_sq = np.zeros(3)
+        self.minimum = np.full(3, np.inf)
+        self.maximum = np.full(3, -np.inf)
+        self.pixels = 0
+        self.frames = 0
+
+    def add(self, frames_chw: list[np.ndarray]) -> None:
+        for frame in frames_chw:
+            flat = frame.reshape(3, -1).astype(np.float64) / 255.0
+            self.total += flat.sum(axis=1)
+            self.total_sq += np.square(flat).sum(axis=1)
+            self.minimum = np.minimum(self.minimum, flat.min(axis=1))
+            self.maximum = np.maximum(self.maximum, flat.max(axis=1))
+            self.pixels += flat.shape[1]
+            self.frames += 1
+
+    def reduce(self) -> dict[str, Any]:
+        mean = self.total / self.pixels
+        variance = np.maximum(self.total_sq / self.pixels - mean * mean, 0.0)
+        return {
+            "min": _to_list(self.minimum[:, None, None]),
+            "max": _to_list(self.maximum[:, None, None]),
+            "mean": _to_list(mean[:, None, None]),
+            "std": _to_list(np.sqrt(variance)[:, None, None]),
+            "count": [self.frames],
+        }
+
+
 class StatsAccumulator:
     """Collect per-feature samples across episodes, then reduce them once."""
 
     def __init__(self) -> None:
         self._numeric: dict[str, list[np.ndarray]] = {}
-        self._images: dict[str, list[np.ndarray]] = {}
+        self._images: dict[str, _ImageMoments] = {}
 
     def add_numeric(self, key: str, values: np.ndarray) -> None:
         """Add ``(N,)`` or ``(N, D)`` rows for a numeric feature."""
@@ -102,8 +154,7 @@ class StatsAccumulator:
 
     def add_images(self, key: str, frames: list[np.ndarray]) -> None:
         """Add sampled RGB frames (HWC uint8) for an image feature."""
-        for frame in frames:
-            self._images.setdefault(key, []).append(_prepare_image(frame))
+        self._images.setdefault(key, _ImageMoments()).add([_prepare_image(frame) for frame in frames])
 
     def add_episode(
         self,
@@ -127,7 +178,7 @@ class StatsAccumulator:
             episode[key] = reduce_numeric(rows)
         for key, frames in images.items():
             prepared = [_prepare_image(frame) for frame in frames]
-            self._images.setdefault(key, []).extend(prepared)
+            self._images.setdefault(key, _ImageMoments()).add(prepared)
             episode[key] = reduce_images(prepared)
         return {key: episode[key] for key in sorted(episode)}
 
@@ -136,8 +187,8 @@ class StatsAccumulator:
         stats: dict[str, dict[str, Any]] = {}
         for key, chunks in self._numeric.items():
             stats[key] = reduce_numeric(np.concatenate(chunks, axis=0))
-        for key, frames in self._images.items():
-            stats[key] = reduce_images(frames)
+        for key, moments in self._images.items():
+            stats[key] = moments.reduce()
         return {key: stats[key] for key in sorted(stats)}
 
 

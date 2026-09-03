@@ -18,10 +18,10 @@ from .features import SOURCE_TIMESTAMP, build_features, video_features
 from .geometry import quaternions_to_rotation_6d, to_wxyz
 from .logger import get_logger
 from .source import SourceEpisode, read_episode
-from .stats import StatsAccumulator, sample_positions
+from .stats import StatsAccumulator, downsample_hwc, sample_positions
 from .sync import SyncReport, build_sync
 from .video import VideoAggregator
-from .writer import DatasetWriter, VideoPlacement
+from .writer import DatasetWriter, VideoPlacement, seconds_to_ns
 
 logger = get_logger("hdf52lerobot")
 
@@ -123,12 +123,18 @@ class Hdf5ToLeRobotConverter:
         accumulator = StatsAccumulator()
         sources: list[dict[str, Any]] = []
 
+        # One pool for the whole run: a pool per episode means fresh threads,
+        # and every fresh thread can pull a new malloc arena that is never
+        # returned, so memory would creep up with the episode count.
+        workers = self.config.workers or max(1, (os.cpu_count() or 2) // 2)
+        pool = ThreadPoolExecutor(max_workers=min(workers, len(first.videos) or 1))
         try:
             for position, path in enumerate(episode_paths):
                 episode = first if position == 0 else read_episode(path, self.config)
                 self._check_layout(episode, first, state_names)
-                sources.append(self._convert_episode(episode, writer, aggregators, accumulator))
+                sources.append(self._convert_episode(episode, writer, aggregators, accumulator, pool))
         finally:
+            pool.shutdown(wait=True)
             for aggregator in aggregators.values():
                 aggregator.close()
 
@@ -185,6 +191,7 @@ class Hdf5ToLeRobotConverter:
         writer: DatasetWriter,
         aggregators: dict[str, VideoAggregator],
         accumulator: StatsAccumulator,
+        pool: ThreadPoolExecutor,
     ) -> dict[str, Any]:
         """Write one episode; returns its ``meta/sources.json`` entry."""
         sync = build_sync(episode, self.config)
@@ -204,26 +211,25 @@ class Hdf5ToLeRobotConverter:
 
         placements: dict[str, VideoPlacement] = {}
         samples: dict[str, list[np.ndarray]] = {}
-        workers = self.config.workers or max(1, (os.cpu_count() or 2) // 2)
-        with ThreadPoolExecutor(max_workers=min(workers, len(episode.videos) or 1)) as pool:
-            futures = {
-                stream.feature: pool.submit(
-                    aggregators[stream.feature].append,
-                    stream.path,
-                    sync.indices_for(key),
-                    positions,
-                )
-                for key, stream in episode.videos.items()
-            }
-            for feature, future in futures.items():
-                result = future.result()
-                placements[feature] = VideoPlacement(
-                    chunk_index=result.chunk_index,
-                    file_index=result.file_index,
-                    from_timestamp=result.from_timestamp,
-                    to_timestamp=result.to_timestamp,
-                )
-                samples[feature] = result.samples
+        futures = {
+            stream.feature: pool.submit(
+                aggregators[stream.feature].append,
+                stream.path,
+                sync.indices_for(key),
+                positions,
+                downsample_hwc,
+            )
+            for key, stream in episode.videos.items()
+        }
+        for feature, future in futures.items():
+            result = future.result()
+            placements[feature] = VideoPlacement(
+                chunk_index=result.chunk_index,
+                file_index=result.file_index,
+                from_timestamp=result.from_timestamp,
+                to_timestamp=result.to_timestamp,
+            )
+            samples[feature] = result.samples
 
         record = writer.add_episode(
             states,
@@ -245,7 +251,7 @@ class Hdf5ToLeRobotConverter:
             "task_index": np.full(length, writer.task_index(self.config.task)),
         }
         if self.config.keep_source_timestamp:
-            numeric[SOURCE_TIMESTAMP] = sync.tick_timestamps
+            numeric[SOURCE_TIMESTAMP] = seconds_to_ns(sync.tick_timestamps)
         record.stats = accumulator.add_episode(numeric=numeric, images=samples)
 
         offsets_ms = np.abs(sync.warp_s) * 1000.0

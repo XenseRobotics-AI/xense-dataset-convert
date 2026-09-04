@@ -52,11 +52,14 @@ def build_features(
         features[SOURCE_TIMESTAMP] = {"dtype": "int64", "names": None, "shape": [1]}
 
     for stream in episode.videos.values():
+        # The shape the dataset carries is the frame *after* the stream's
+        # transforms, which can swap width and height.
+        width, height = stream.output_size
         features[stream.feature] = {
             "dtype": "video",
-            "info": video_info(stream.width, stream.height, config),
+            "info": video_info(width, height, config),
             "names": ["height", "width", "channels"],
-            "shape": [int(stream.height), int(stream.width), 3],
+            "shape": [height, width, 3],
         }
 
     return {key: features[key] for key in sorted(features)}

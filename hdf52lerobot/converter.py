@@ -116,7 +116,12 @@ class Hdf5ToLeRobotConverter:
         writer = DatasetWriter(self.output_root, self.config, features, video_keys)
         aggregators = {
             stream.feature: VideoAggregator(
-                self.output_root, stream.feature, stream.width, stream.height, self.config
+                self.output_root,
+                stream.feature,
+                stream.width,
+                stream.height,
+                self.config,
+                stream.transform,
             )
             for stream in first.videos.values()
         }

@@ -15,11 +15,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hdf52lerobot.config import ConverterConfig  # noqa: E402
+from dataclasses import replace  # noqa: E402
+
+from hdf52lerobot.config import ConverterConfig, StreamRule  # noqa: E402
 from hdf52lerobot.converter import (  # noqa: E402
     Hdf5ToLeRobotConverter,
     build_action,
     discover_episodes,
+)
+from hdf52lerobot.imaging import (  # noqa: E402
+    compose,
+    transformed_size,
+    validate_transforms,
 )
 from hdf52lerobot.geometry import (  # noqa: E402
     quaternions_to_rotation_6d,
@@ -139,6 +146,45 @@ def test_rotation_6d_is_two_orthonormal_columns():
 def test_quaternion_order_swap():
     assert np.allclose(to_wxyz(np.array([[1.0, 2.0, 3.0, 4.0]]), "xyzw"), [[4.0, 1.0, 2.0, 3.0]])
     assert np.allclose(to_wxyz(np.array([[1.0, 2.0, 3.0, 4.0]]), "wxyz"), [[1.0, 2.0, 3.0, 4.0]])
+
+
+# -- frame transforms --------------------------------------------------------
+
+
+def test_bgr_to_rgb_and_transpose_match_the_capture_path():
+    """Same two steps `xense-taccap-lerobot` applies to a tactile frame."""
+    frame = np.zeros((7, 4, 3), dtype=np.uint8)
+    frame[0, 0] = (10, 20, 30)  # BGR as the SDK hands it over
+    frame[6, 3] = (40, 50, 60)
+
+    swapped = compose(["bgr_to_rgb"])(frame)
+    assert swapped[0, 0].tolist() == [30, 20, 10]
+    assert swapped.shape == frame.shape
+
+    laid_down = compose(["transpose"])(frame)
+    assert laid_down.shape == (4, 7, 3)
+    assert laid_down[0, 0].tolist() == [10, 20, 30]
+    assert laid_down[3, 6].tolist() == [40, 50, 60]  # the corner moved with it
+
+    both = compose(["bgr_to_rgb", "transpose"])(frame)
+    assert both.shape == (4, 7, 3)
+    assert both[0, 0].tolist() == [30, 20, 10]
+    assert both.flags["C_CONTIGUOUS"]
+
+
+def test_transformed_size_swaps_only_for_transpose():
+    assert transformed_size(400, 700, []) == (400, 700)
+    assert transformed_size(400, 700, ["bgr_to_rgb"]) == (400, 700)
+    assert transformed_size(400, 700, ["bgr_to_rgb", "transpose"]) == (700, 400)
+
+
+def test_unknown_transform_is_rejected():
+    with pytest.raises(ValueError, match="Unknown frame transform"):
+        validate_transforms(["rotate90"])
+    with pytest.raises(ValueError, match="Unknown frame transform"):
+        ConverterConfig(streams=(StreamRule(r"^x\.mkv$", "video", "x", ("flip",)),))
+    with pytest.raises(ValueError, match="only meaningful for 'video'"):
+        StreamRule(r"^x\.hdf5$", "pose", "x", ("transpose",))
 
 
 # -- source / sync -----------------------------------------------------------
@@ -311,6 +357,26 @@ def test_dataset_tree(dataset: Path):
         ).is_file()
 
 
+def test_info_key_order_matches_tacverse(dataset: Path):
+    """`features` is hundreds of lines; the totals a reader wants come first."""
+    info = json.loads((dataset / "meta" / "info.json").read_text())
+    assert list(info) == [
+        "codebase_version",
+        "robot_type",
+        "total_episodes",
+        "total_frames",
+        "total_tasks",
+        "chunks_size",
+        "data_files_size_in_mb",
+        "video_files_size_in_mb",
+        "fps",
+        "splits",
+        "data_path",
+        "video_path",
+        "features",
+    ]
+
+
 def test_info_matches_the_taccap_layout(dataset: Path):
     info = json.loads((dataset / "meta" / "info.json").read_text())
     assert info["codebase_version"] == "v3.0"
@@ -443,7 +509,66 @@ def test_tacverse_config_loads():
     )
     assert (config.fps, config.pair, config.keep_source_timestamp) == (20, "grid", True)
     assert config.robot_type == "bi_rdt_gripper"
+    # The third camera is a side view without a pose, and the tactile streams
+    # carry the two transforms the capture path would have applied.
+    by_key = {rule.key: rule for rule in config.streams}
+    assert "head" not in by_key
+    assert by_key["side"].kind == "video" and by_key["side"].transform == ()
+    assert by_key["{side}_tactile_{pos}"].transform == ("bgr_to_rgb", "transpose")
     assert len(config.state_names({"left_tcp": "pose", "left_gripper": "gripper", "right_tcp": "pose", "right_gripper": "gripper"})) == 20
+
+
+def test_transformed_camera_is_written_rotated_and_recoloured(recording: Path, tmp_path: Path):
+    """A camera with `transform` lands in the dataset the other way round."""
+    import av
+
+    base = ConverterConfig.from_yaml(
+        Path(__file__).resolve().parent.parent / "configs" / "hdf52lerobot.yaml"
+    )
+    base = replace(base, fps=FPS, gop=4, preset="ultrafast", task="t")
+    with_transform = replace(
+        base,
+        streams=tuple(
+            replace(rule, transform=("bgr_to_rgb", "transpose"))
+            if "tactile" in rule.key
+            else rule
+            for rule in base.streams
+        ),
+    )
+
+    def first_frame(root: Path, key: str) -> np.ndarray:
+        path = root / "videos" / f"observation.images.{key}" / "chunk-000" / "file-000.mp4"
+        with av.open(str(path)) as container:
+            return next(container.decode(video=0)).to_ndarray(format="rgb24")
+
+    plain = Hdf5ToLeRobotConverter([recording], tmp_path / "plain", base).convert()
+    turned = Hdf5ToLeRobotConverter(
+        [recording], tmp_path / "turned", with_transform
+    ).convert()
+
+    info = json.loads((turned / "meta" / "info.json").read_text())
+    # Sources are WIDTH x HEIGHT; only the transposed cameras come out swapped.
+    assert info["features"]["observation.images.head"]["shape"] == [HEIGHT, WIDTH, 3]
+    tactile = info["features"]["observation.images.left_tactile_left"]
+    assert tactile["shape"] == [WIDTH, HEIGHT, 3]
+    assert (tactile["info"]["video.width"], tactile["info"]["video.height"]) == (HEIGHT, WIDTH)
+
+    original = first_frame(plain, "left_tactile_left")
+    transformed = first_frame(turned, "left_tactile_left")
+    assert original.shape == (HEIGHT, WIDTH, 3)
+    assert transformed.shape == (WIDTH, HEIGHT, 3)
+    # A transpose leaves the per-channel means alone, so what is left to compare
+    # is the channel order: it is reversed.
+    assert np.allclose(
+        [transformed[..., channel].mean() for channel in range(3)],
+        [original[..., 2 - channel].mean() for channel in range(3)],
+        atol=2.0,
+    )
+    # An untransformed camera in the same run is untouched.
+    assert first_frame(turned, "head").shape == (HEIGHT, WIDTH, 3)
+
+    stats = json.loads((turned / "meta" / "stats.json").read_text())
+    assert np.array(stats["observation.images.left_tactile_left"]["mean"]).shape == (3, 1, 1)
 
 
 def test_shipped_config_loads():

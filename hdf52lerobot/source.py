@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import GRIPPER, POSE, VIDEO, ConverterConfig
+from .imaging import transformed_size
 from .logger import get_logger
 
 logger = get_logger("hdf52lerobot.source")
@@ -52,7 +53,12 @@ class GripperStream:
 
 @dataclass
 class VideoStream:
-    """A camera: an encoded video plus its per-frame timestamp sidecar."""
+    """A camera: an encoded video plus its per-frame timestamp sidecar.
+
+    ``width``/``height`` are the source frames as decoded. When ``transform``
+    swaps the axes the dataset stores something else, which is what
+    ``output_width``/``output_height`` report.
+    """
 
     key: str
     path: Path
@@ -60,10 +66,24 @@ class VideoStream:
     width: int
     height: int
     kind: str = VIDEO
+    transform: tuple[str, ...] = ()
 
     @property
     def feature(self) -> str:
         return f"observation.images.{self.key}"
+
+    @property
+    def output_size(self) -> tuple[int, int]:
+        """``(width, height)`` as written to the dataset."""
+        return transformed_size(self.width, self.height, self.transform)
+
+    @property
+    def output_width(self) -> int:
+        return self.output_size[0]
+
+    @property
+    def output_height(self) -> int:
+        return self.output_size[1]
 
 
 @dataclass
@@ -162,7 +182,7 @@ def read_episode(path: str | Path, config: ConverterConfig) -> SourceEpisode:
             if resolved is None:
                 continue
             key, groups = resolved
-            _add_stream(episode, rule.kind, key, entry, groups)
+            _add_stream(episode, rule.kind, key, entry, groups, rule.transform)
             matched = True
             break
         if not matched:
@@ -180,6 +200,7 @@ def _add_stream(
     key: str,
     path: Path,
     groups: dict[str, str],
+    transform: tuple[str, ...] = (),
 ) -> None:
     existing = episode.all_streams().get(key)
     if existing is not None:
@@ -192,7 +213,12 @@ def _add_stream(
         timestamps = _read_sidecar(path)
         width, height = _probe_video(path)
         episode.videos[key] = VideoStream(
-            key=key, path=path, timestamps=timestamps, width=width, height=height
+            key=key,
+            path=path,
+            timestamps=timestamps,
+            width=width,
+            height=height,
+            transform=transform,
         )
         return
 

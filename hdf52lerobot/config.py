@@ -13,6 +13,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from .imaging import validate_transforms
+
 VIDEO = "video"
 POSE = "pose"
 GRIPPER = "gripper"
@@ -38,16 +40,27 @@ class StreamRule:
         key: Stream key template, e.g. ``"{side}_wrist"``. For videos this
             becomes the feature ``observation.images.<key>``; for pose/gripper
             it prefixes the state field names.
+        transform: Frame transforms applied to this camera on the way out, in
+            order -- see :mod:`hdf52lerobot.imaging`. Videos only; a recorder
+            that wrote the sensor's own BGR portrait frames needs
+            ``[bgr_to_rgb, transpose]`` to match what the capture path
+            produces.
     """
 
     pattern: str
     kind: str
     key: str
+    transform: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
             raise ValueError(f"Unknown stream kind {self.kind!r}, expected one of {KINDS}")
         re.compile(self.pattern)
+        object.__setattr__(self, "transform", validate_transforms(self.transform))
+        if self.transform and self.kind != VIDEO:
+            raise ValueError(
+                f"transform is only meaningful for {VIDEO!r} streams, not {self.kind!r}"
+            )
 
     def match(self, filename: str) -> tuple[str, dict[str, str]] | None:
         """Return ``(resolved_key, named_groups)`` when the rule applies."""
@@ -223,7 +236,12 @@ class ConverterConfig:
         rules = raw.pop("streams", None)
         if rules is not None:
             raw["streams"] = tuple(
-                StreamRule(pattern=item["pattern"], kind=item["kind"], key=item["key"])
+                StreamRule(
+                    pattern=item["pattern"],
+                    kind=item["kind"],
+                    key=item["key"],
+                    transform=tuple(item.get("transform") or ()),
+                )
                 for item in rules
             )
         if "state_layout" in raw:

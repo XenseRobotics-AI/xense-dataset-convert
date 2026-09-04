@@ -34,6 +34,11 @@ hdf52lerobot \
 Two 72-second episodes (11 streams each, 1.1 GB of source) convert in ~14 s and
 land at ~118 MB.
 
+`--task` sets one task for the whole dataset. When a capture schedule gives
+each session its own task, `--tasks FILE` takes a YAML/JSON map from recording
+directory name to task text instead, and `--task` becomes the fallback for
+anything the map does not name.
+
 Useful flags: `--config` (rule file, default
 [`configs/hdf52lerobot.yaml`](../configs/hdf52lerobot.yaml)), `--fps`,
 `--quat-order`, `--pair`, `--max-sync-gap-frames`, `--warn-sync-gap-frames`,
@@ -130,10 +135,25 @@ loop stalls, `keep_source_timestamp: true`, and
 `transform: [bgr_to_rgb, transpose]` on the tactile cameras, which the recorder
 wrote in the sensor's own colour order and orientation.
 
+Those recordings carry no task text: what identifies a session's task is when
+it was recorded, through the capture team's schedule
+(`采集任务时间安排表.xlsx`, a task code per half-day plus a sheet spelling the
+codes out). [`tools/rdt_task_map.py`](../tools/rdt_task_map.py) turns that into
+a per-episode map, which `--tasks` then applies. Rigs are converted separately,
+one dataset per machine number:
+
 ```bash
-hdf52lerobot --config configs/tacverse_rdt.yaml \
+python tools/rdt_task_map.py \
+  --schedule ~/Documents/TacVerse-RDT-Rules/采集任务时间安排表.xlsx \
   --input /archive/TacVerse-RDT-Raw/035 --input /archive/TacVerse-RDT-Raw/036 \
-  --output /archive/lerobot/TacVerse/<name> --task "<task text>"
+  --output configs/tacverse_rdt_tasks.yaml
+
+for rig in 035 036; do
+  hdf52lerobot --config configs/tacverse_rdt.yaml \
+    --tasks configs/tacverse_rdt_tasks.yaml \
+    --input /archive/TacVerse-RDT-Raw/$rig \
+    --output /archive/lerobot/TacVerse/TacVerse-RDT-$rig
+done
 ```
 
 ## Extending it (new cameras, head pose)

@@ -1,0 +1,318 @@
+# Task catalogue for the TacVerse-RDT recordings: the capture team's task codes
+# A1-A37, with the English task text a converted dataset carries and the slug
+# its directory name is built from.
+#
+#   <prefix>-<slug>-<MMDD>     e.g. xtac-rdt-umi-shake-liquid-bottle-0822
+#
+# `zh` is the capture team's own wording from 采集任务时间安排表.xlsx sheet 1,
+# kept beside the translation so a reviewer can check one against the other; it
+# is never written into a dataset. `en` follows the TacVerse house style: an
+# imperative sentence naming the objects and, where the schedule defines one,
+# the condition that ends the episode.
+#
+# `objects` and `gel` come from the same sheet. The gel layer (thick / thin) is
+# a property of the hardware for that session, not of the task, and is recorded
+# here so meta/hardware.json can carry it later.
+#
+# DRAFT: every `en` line is a translation awaiting review. The terms of art --
+# 临界压溃 (crushing at the plastic-deformation threshold), 瞬态滑移 (transient
+# slip), 抗滑移 (slip resistance) -- are the ones worth checking first.
+
+version: 1
+
+tasks:
+  A1:
+    category: limit
+    gel: thick
+    objects: [aluminium foil, paper cup, plastic bottle]
+    zh: 临界压溃/塑性形变物品抓取，持续加压，从弹性形变到产生永久变形、挤压塌陷
+    en: Grasp the deformable object and keep increasing the grip force, carrying it from elastic deformation through to permanent deformation until the object collapses.
+    slug: crush-object-to-collapse
+
+  A2:
+    category: limit
+    gel: thick
+    objects: [bottle, cylindrical object]
+    zh: 轻微扰动抗滑移 夹紧物体后，施加小幅水平推拉、小幅抖动
+    en: Grip the bottle firmly, then push, pull and shake it horizontally by small amounts so that it resists slipping in the fingers.
+    slug: resist-slip-horizontal-disturbance
+
+  A3:
+    category: limit
+    gel: thick
+    objects: [bottle, cylindrical object]
+    zh: 轻微扰动抗滑移 夹紧物体后，施加小幅纵向推拉、小幅抖动
+    en: Grip the bottle firmly, then push, pull and shake it vertically by small amounts so that it resists slipping in the fingers.
+    slug: resist-slip-vertical-disturbance
+
+  A4:
+    category: limit
+    gel: thick
+    objects: [silicone sheet, tarpaulin]
+    zh: 往复拖拽、往复摩擦软质物品
+    en: Hold the soft sheet and drag it back and forth across the table, rubbing and smoothing it repeatedly.
+    slug: drag-and-smooth-soft-sheet
+
+  A5:
+    category: limit
+    gel: thin
+    objects: [assorted small objects]
+    zh: 临界打滑瞬间（瞬态滑移）不同物品从夹爪滑落到托盘
+    en: Hold each object at the edge of slipping and let it slide out of the fingers into the tray, capturing the moment the grip gives way.
+    slug: let-object-slip-into-tray
+
+  A6:
+    category: limit
+    gel: thin
+    objects: [assorted small objects]
+    zh: 轻抛放置（轻抛物品到框里面）
+    en: Pick up each small object and toss it gently into the bin.
+    slug: toss-object-into-bin
+
+  A7:
+    category: regular
+    gel: thick
+    objects: [plug, power strip]
+    zh: 插拔USB，USB数据线和插头插拔，组装好之后，插头和插线板插拔
+    en: Plug the USB cable into the adapter and pull it out again, then plug the adapter into the power strip and pull it out again.
+    slug: plug-and-unplug-usb
+
+  A8:
+    category: regular
+    gel: thick
+    objects: [screw, nut]
+    zh: 拧螺丝
+    en: Turn the screw into the nut until it is tight, then back it out again.
+    slug: tighten-screw
+
+  A9:
+    category: regular
+    gel: thick
+    objects: [screw, nut]
+    zh: 拧螺母
+    en: Turn the nut onto the screw until it is tight, then back it off again.
+    slug: tighten-nut
+
+  A10:
+    category: regular
+    gel: thick
+    objects: [drink bottle, reagent bottle]
+    zh: 可以拧开盖的物品，把盖子拧开，再拧回去。
+    en: Unscrew the cap from the bottle, set it down, then screw it back on until it is closed.
+    slug: unscrew-and-refit-cap
+
+  A11:
+    category: regular
+    gel: thin
+    objects: [drink bottle, reagent bottle]
+    zh: 可以倒置的物品，将其上下颠倒放置，再颠倒放回来。
+    en: Turn the bottle upside down and stand it on the table, then turn it back the right way up.
+    slug: invert-and-right-bottle
+
+  A12:
+    category: regular
+    gel: thin
+    objects: [drink bottle, reagent bottle]
+    zh: 装有液体的封闭容器，摇动，每件用稍慢的速度摇30秒，再用稍快的速度摇30秒。
+    en: Pick up the closed bottle of liquid and shake it slowly for thirty seconds, then faster for another thirty seconds.
+    slug: shake-liquid-bottle
+
+  A13:
+    category: regular
+    gel: thin
+    objects: [drink bottle, reagent bottle]
+    zh: 装有颗粒物的封闭容器，摇动，每件用稍慢的速度摇30秒，再用稍快的速度摇30秒。
+    en: Pick up the closed bottle of granules and shake it slowly for thirty seconds, then faster for another thirty seconds.
+    slug: shake-granule-bottle
+
+  A14:
+    category: regular
+    gel: thick
+    objects: [adjustable power adapter, rotary switch]
+    zh: 扭动 开关 旋转按钮等
+    en: Turn the rotary knob on the adapter to change its setting, then turn it back.
+    slug: turn-rotary-knob
+
+  A15:
+    category: regular
+    gel: thick
+    objects: [office cabinet]
+    zh: 抽拉 抽屉 开合 柜门
+    en: Pull the cabinet drawer open and push it shut, then open the cabinet door and close it again.
+    slug: open-and-close-drawer
+
+  A16:
+    category: regular
+    gel: thick
+    objects: [scouring pad, bowl, plate]
+    zh: 各种百洁布擦碗 盘子
+    en: Hold the scouring pad and wipe the bowl and the plate all over until their surfaces are covered.
+    slug: scrub-bowl-and-plate
+
+  A17:
+    category: regular
+    gel: thick
+    objects: [scouring pad, tableware]
+    zh: 各种百洁布擦其他餐具
+    en: Hold the scouring pad and wipe the remaining tableware all over until every piece is covered.
+    slug: scrub-tableware
+
+  A18:
+    category: regular
+    gel: thin
+    objects: [towels of three materials, table]
+    zh: 不同材质的毛巾（3种）擦桌子
+    en: Wipe the tabletop with the towel, working across the surface, and repeat with each of the three towel materials.
+    slug: wipe-table-with-towel
+
+  A19:
+    category: regular
+    gel: thin
+    objects: [towels of three materials, small objects]
+    zh: 不同材质的毛巾（3种）擦小件物品
+    en: Wipe each small object with the towel until its surface is covered, and repeat with each of the three towel materials.
+    slug: wipe-small-objects-with-towel
+
+  A20:
+    category: combined
+    gel: thin
+    objects: [socks]
+    zh: 把1双/3双袜子叠起来，收纳好。布料拉伸、抚平
+    en: Stretch and smooth each pair of socks, fold them together, and put them away neatly.
+    slug: fold-and-store-socks
+
+  A21:
+    category: combined
+    gel: thin
+    objects: [towels]
+    zh: 把散落的1条/3条毛巾叠好，并整齐的摞在一起。毛巾拉伸、抚平
+    en: Stretch and smooth each loose towel, fold it, and stack the folded towels squarely on top of one another.
+    slug: fold-and-stack-towels
+
+  A22:
+    category: combined
+    gel: thin
+    objects: [sweater]
+    zh: 叠毛衣，平铺毛衣，先叠右侧袖子，再叠左侧袖子，向上翻折，整理摆放好
+    en: Lay the sweater flat, fold the right sleeve in, then the left, fold it upward, and square the result off on the table.
+    slug: fold-sweater
+
+  A23:
+    category: regular
+    gel: thick
+    objects: [basket, bucket, small objects]
+    zh: 倾倒 把容器里的小件物品倾倒进台面上的另一个容器中。
+    en: Lift the container of small objects and tip its contents into the other container on the table until it is empty.
+    slug: pour-objects-between-containers
+
+  A24:
+    category: regular
+    gel: thin
+    objects: [basket, small objects]
+    zh: 五种物品放在桌面，放入框中
+    en: Pick up the five objects from the table one by one and place them into the basket.
+    slug: place-five-objects-in-basket
+
+  A25:
+    category: regular
+    gel: thin
+    objects: [tote bag, small objects]
+    zh: 五种物品放在桌面，放入袋子中
+    en: Pick up the five objects from the table one by one and place them into the bag.
+    slug: place-five-objects-in-bag
+
+  A26:
+    category: regular
+    gel: thin
+    objects: [assorted small objects]
+    zh: 把10件杂物放在桌面，分成两堆
+    en: Sort the ten objects on the table into two separate piles.
+    slug: sort-objects-into-two-piles
+
+  A27:
+    category: combined
+    gel: thick
+    objects: [bottle, cylindrical object]
+    zh: 物品左右交替，左手把物品夹紧，纵向推拉，交到右手，右手滑移
+    en: Grip the object in the left hand, push and pull it vertically, hand it over to the right hand, and let it slide within the right fingers.
+    slug: hand-over-object-between-grippers
+
+  A28:
+    category: regular
+    gel: thick
+    objects: [backpack]
+    zh: 拉开书包拉链，再闭合
+    en: Pull the backpack zip open along its full travel, then close it again.
+    slug: open-and-close-backpack-zip
+
+  A29:
+    category: combined
+    gel: thick
+    objects: [flat cardboard box]
+    zh: 叠纸盒，用夹爪把平面纸壳的飞机盒折成立体纸盒
+    en: Fold the flat cardboard blank along its creases until it stands up as a finished box.
+    slug: fold-cardboard-box
+
+  A30:
+    category: regular
+    gel: thin
+    objects: [assorted small objects]
+    zh: 桌面上2件物品，把A放到B上面，把A从B拿下来，放到随机位置
+    en: With two objects on the table, place the first on top of the second, then take it off and set it down somewhere else.
+    slug: stack-and-unstack-two-objects
+
+  A31:
+    category: regular
+    gel: thin
+    objects: [assorted small objects]
+    zh: 桌面上2件物品，把A放到B旁边（上下左右四个方向随机）
+    en: With two objects on the table, place the first beside the second, on whichever side is called for.
+    slug: place-object-beside-another
+
+  A32:
+    category: regular
+    gel: thin
+    objects: [assorted small objects]
+    zh: 桌面上2件物品，拿起A然后放下，拿起B然后放下（位置随机选择）
+    en: With two objects on the table, pick up the first and set it down again elsewhere, then do the same with the second.
+    slug: pick-and-place-two-objects
+
+  A33:
+    category: regular
+    gel: thin
+    objects: [assorted small objects]
+    zh: 桌面上2件物品，把A旋转后换一个方向摆放（朝左->朝右；平放->立放，旋转任意角度）
+    en: With two objects on the table, rotate the first and set it down facing a different way, whether turned about or stood upright.
+    slug: rotate-object-to-new-orientation
+
+  A34:
+    category: regular
+    gel: thin
+    objects: [assorted small objects]
+    zh: 桌面上多件物品，把A放到B上面，把A从B上面拿下来，摆放到随机位置，依次按此操作。
+    en: With several objects on the table, stack one on another and take it off again to a new spot, repeating for each object in turn.
+    slug: stack-and-unstack-many-objects
+
+  A35:
+    category: regular
+    gel: thin
+    objects: [assorted small objects]
+    zh: 桌面上多件物品，把A放到B旁边（上下左右四个方向随机），依次按此操作
+    en: With several objects on the table, place one beside another on whichever side is called for, repeating for each object in turn.
+    slug: place-many-objects-beside-another
+
+  A36:
+    category: regular
+    gel: thin
+    objects: [assorted small objects]
+    zh: 桌面上多件物品，拿起A然后放下（位置随机选择），拿起B然后放下（位置随机选择），以此类推
+    en: With several objects on the table, pick up one and set it down elsewhere, repeating for each object in turn.
+    slug: pick-and-place-many-objects
+
+  A37:
+    category: regular
+    gel: thin
+    objects: [assorted small objects]
+    zh: 桌面上多件物品，将所有物品依次旋转后换一个方向摆放（朝左->朝右；平放->立放，旋转任意角度）
+    en: With several objects on the table, rotate each one in turn and set it down facing a different way.
+    slug: rotate-many-objects-to-new-orientation

@@ -55,7 +55,7 @@ Useful flags: `--config` (rule file, default
 ```
 <output>/
 ├── meta/
-│   ├── info.json                          # fps, robot_type, features
+│   ├── info.json                          # totals first, then features
 │   ├── stats.json                         # min/max/mean/std/count per feature
 │   ├── tasks.parquet
 │   └── episodes/chunk-000/file-000.parquet  # per-episode ranges + stats/* blocks
@@ -102,6 +102,13 @@ Useful flags: `--config` (rule file, default
   the declared fps with a short GOP — the sources carry 200+ frame GOPs, which
   makes LeRobot's random-access reads crawl, and LeRobot's default
   `tolerance_s = 1e-4` requires frame *i* to sit exactly at *i/fps*.
+- **Frame transforms**: a `video` rule can carry `transform:`, applied per camera
+  before encoding, so the mp4, the feature shape and the statistics all describe
+  the same picture. `bgr_to_rgb` reverses the channels; `transpose` swaps height
+  and width. Both mirror what the capture path in `xense-taccap-lerobot` does to
+  a Xense tactile frame (`cameras/xense/camera_xense.py`), which is why every
+  TacVerse dataset stores tactile as 400×700 RGB. A recorder that wrote the
+  sensor's own BGR portrait frames needs `transform: [bgr_to_rgb, transpose]`.
 
 ## Caveats
 
@@ -116,13 +123,17 @@ Useful flags: `--config` (rule file, default
 ## Profiles
 
 [`configs/tacverse_rdt.yaml`](../configs/tacverse_rdt.yaml) is the profile for
-the TacVerse-RDT recordings: same rig layout, `pair: grid` at 20 Hz because that
-recorder's loop stalls, and `keep_source_timestamp: true`.
+the TacVerse-RDT recordings, the RDT capture team's standard format: a
+side-view camera (no head pose), two wrist cameras, four tactile sensors and
+the same 20-dim state. It sets `pair: grid` at 20 Hz because that recorder's
+loop stalls, `keep_source_timestamp: true`, and
+`transform: [bgr_to_rgb, transpose]` on the tactile cameras, which the recorder
+wrote in the sensor's own colour order and orientation.
 
 ```bash
 hdf52lerobot --config configs/tacverse_rdt.yaml \
-  --input /archive/TacVerse-RDT/035 --input /archive/TacVerse-RDT/036 \
-  --output /archive/TacVerse/<name> --task "<task text>"
+  --input /archive/TacVerse-RDT-Raw/035 --input /archive/TacVerse-RDT-Raw/036 \
+  --output /archive/lerobot/TacVerse/<name> --task "<task text>"
 ```
 
 ## Extending it (new cameras, head pose)

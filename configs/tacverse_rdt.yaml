@@ -1,14 +1,28 @@
-# hdf52lerobot profile for the TacVerse-RDT recordings (/archive/TacVerse-RDT/<rig>/ep_*).
+# hdf52lerobot profile for the TacVerse-RDT recordings
+# (/archive/TacVerse-RDT-Raw/<rig>/ep_*), the RDT capture team's standard
+# format: one side-view camera, two wrist cameras, four tactile sensors, two
+# Vive trackers, two openv2 jaw encoders, and a 20-dim observation.state. The
+# rig has no head tracker, so nothing contributes a head pose and the third
+# camera is a fixed side view rather than a headset camera.
 #
-# Same rig layout as configs/hdf52lerobot.yaml: head + two wrist cameras, four
-# tactile sensors, two Vive trackers, two openv2 jaw encoders, and the same
-# 20-dim observation.state. What differs is the clock. The recorder's polling
+# Three things differ from what this converter's defaults assume.
+#
+# 1. The clock. The recorder's polling
 # loop targets 30 Hz but stalls often enough to average 20 to 24 Hz, with the
 # rate changing from one episode to the next, so its iterations cannot be the
 # dataset's time axis. `pair: grid` lays a uniform 20 Hz grid over each episode
 # and takes the nearest iteration for every tick (a tick inside a stall repeats
 # the previous iteration; iterations between ticks are dropped; both are
 # reported per stream and recorded in meta/sources.json).
+#
+# 2. Tactile colour. The Xense SDK hands out BGR; this recorder encoded those
+# bytes as if they were RGB, so the channels come back reversed. `bgr_to_rgb`
+# puts them back, which lines the frames up with every TacVerse dataset.
+#
+# 3. Tactile orientation. The capture path in xense-taccap-lerobot lays the
+# sensor's portrait frame down (cameras/xense/camera_xense.py transposes on
+# read), which is why TacVerse stores tactile as 400x700. This recorder wrote
+# the sensor's own 700x400, so `transpose` applies the same swap here.
 #
 #   hdf52lerobot --config configs/tacverse_rdt.yaml \
 #       --input /archive/TacVerse-RDT/035 --input /archive/TacVerse-RDT/036 \
@@ -40,15 +54,20 @@ state_layout:
   - right_gripper
 
 streams:
+  # Named `side`, not `head`: this camera watches the workspace from the side,
+  # and unlike a headset camera it has no pose stream to go with it.
   - pattern: '^head_.*_mvs_mono_.*\.mkv$'
     kind: video
-    key: head
+    key: side
   - pattern: '^(?P<side>left|right)_umi_.*_mvs_mono_.*\.mkv$'
     kind: video
     key: '{side}_wrist'
   - pattern: '^(?P<side>left|right)_umi_.*_tactile_(?P<pos>left|right)_.*\.mkv$'
     kind: video
     key: '{side}_tactile_{pos}'
+    # BGR bytes written as RGB, and the sensor's portrait frame: put both back
+    # the way the capture path would have.
+    transform: [bgr_to_rgb, transpose]
   - pattern: '^(?P<side>left|right)_umi_.*_tracker_.*\.hdf5$'
     kind: pose
     key: '{side}_tcp'
@@ -56,8 +75,9 @@ streams:
     kind: gripper
     key: '{side}_gripper'
 
-# Sources are 480x480 h264 (head, wrists) and 400x700 AV1 (tactile); all are
-# re-encoded to CFR h264 at the declared fps.
+# Sources are 480x480 h264 (side, wrists) and 400x700 AV1 (tactile); all are
+# re-encoded to CFR h264 at the declared fps. After `transpose` the tactile
+# features are 700x400, matching TacVerse.
 vcodec: libx264
 pix_fmt: yuv420p
 crf: 23

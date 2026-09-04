@@ -571,6 +571,58 @@ def test_transformed_camera_is_written_rotated_and_recoloured(recording: Path, t
     assert np.array(stats["observation.images.left_tactile_left"]["mean"]).shape == (3, 1, 1)
 
 
+def test_per_episode_tasks_land_in_the_dataset(recording: Path, tmp_path: Path):
+    """A capture schedule gives each session its own task; one string per dataset
+    is the exception."""
+    import pyarrow.parquet as pq
+
+    config = ConverterConfig(
+        fps=FPS,
+        gop=4,
+        preset="ultrafast",
+        task="fallback",
+        tasks={"ep_0002": "wipe the plate"},
+    )
+    assert config.task_for("ep_0002") == "wipe the plate"
+    assert config.task_for("ep_0001") == "fallback"
+
+    output = Hdf5ToLeRobotConverter([recording], tmp_path / "tasks", config).convert()
+
+    info = json.loads((output / "meta" / "info.json").read_text())
+    assert info["total_tasks"] == 2
+    tasks = pq.read_table(output / "meta" / "tasks.parquet").to_pandas()
+    assert sorted(tasks.index.tolist()) == ["fallback", "wipe the plate"]
+
+    episodes = pq.read_table(
+        output / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
+    ).to_pandas()
+    assert [list(row) for row in episodes["tasks"]] == [["fallback"], ["wipe the plate"]]
+
+    frame = pq.read_table(output / "data" / "chunk-000" / "file-000.parquet").to_pandas()
+    index_of = {task: int(idx) for task, idx in tasks["task_index"].items()}
+    assert frame["task_index"][:FRAMES].tolist() == [index_of["fallback"]] * FRAMES
+    assert frame["task_index"][FRAMES:].tolist() == [index_of["wipe the plate"]] * FRAMES
+
+    sources = json.loads((output / "meta" / "sources.json").read_text())
+    assert [entry["task"] for entry in sources["episodes"]] == [
+        "fallback",
+        "wipe the plate",
+    ]
+
+
+def test_task_map_file_is_read_by_the_cli(tmp_path: Path):
+    from hdf52lerobot.cli import load_task_map
+
+    path = tmp_path / "tasks.yaml"
+    path.write_text('ep_0001: "pick up the cup"\nep_0002: "fold the towel"\n', encoding="utf-8")
+    assert load_task_map(path) == {"ep_0001": "pick up the cup", "ep_0002": "fold the towel"}
+    (tmp_path / "empty.yaml").write_text("", encoding="utf-8")
+    assert load_task_map(tmp_path / "empty.yaml") == {}
+    (tmp_path / "list.yaml").write_text("- not a mapping\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="expected a mapping"):
+        load_task_map(tmp_path / "list.yaml")
+
+
 def test_shipped_config_loads():
     config = ConverterConfig.from_yaml(
         Path(__file__).resolve().parent.parent / "configs" / "hdf52lerobot.yaml"

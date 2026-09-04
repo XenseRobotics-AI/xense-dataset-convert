@@ -236,10 +236,11 @@ class Hdf5ToLeRobotConverter:
             )
             samples[feature] = result.samples
 
+        task = self.config.task_for(episode.name)
         record = writer.add_episode(
             states,
             actions,
-            self.config.task,
+            task,
             placements,
             source_timestamps=sync.tick_timestamps if self.config.keep_source_timestamp else None,
         )
@@ -253,7 +254,7 @@ class Hdf5ToLeRobotConverter:
             "frame_index": np.arange(length),
             "episode_index": np.full(length, record.episode_index),
             "index": np.arange(record.dataset_from_index, record.dataset_to_index),
-            "task_index": np.full(length, writer.task_index(self.config.task)),
+            "task_index": np.full(length, writer.task_index(task)),
         }
         if self.config.keep_source_timestamp:
             numeric[SOURCE_TIMESTAMP] = seconds_to_ns(sync.tick_timestamps)
@@ -264,7 +265,7 @@ class Hdf5ToLeRobotConverter:
             "episode_index": record.episode_index,
             "source_dir": str(episode.path),
             "source_parent": episode.path.parent.name,
-            "task": self.config.task,
+            "task": task,
             "frames": length,
             "source_iterations": sync.source_length,
             "pair": sync.mode,

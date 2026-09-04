@@ -112,7 +112,17 @@ class ConverterConfig:
     arrival timestamps jitter enough that a median-based estimate is unstable."""
 
     robot_type: str = "bi_rdt_gripper"
+
     task: str = "Converted from UMI HDF5 recording"
+    """Task text for every episode that ``tasks`` does not name."""
+
+    tasks: dict[str, str] = field(default_factory=dict)
+    """Per-episode task text, keyed by the recording directory's name.
+
+    A capture schedule usually gives each session its own task, so one string
+    for a whole dataset is the exception rather than the rule. Episodes not
+    listed here fall back to ``task``. ``--tasks FILE`` loads a mapping without
+    editing the profile."""
 
     quat_order: str = "xyzw"
     """Component order of the tracker's 4 rotation columns. The UMI rig writes
@@ -204,6 +214,10 @@ class ConverterConfig:
     def warn_sync_gap_s(self) -> float:
         return self.warn_sync_gap_frames / self.fps
 
+    def task_for(self, episode_name: str) -> str:
+        """The task text for one recording directory."""
+        return self.tasks.get(episode_name, self.task)
+
     def state_names(self, kinds: dict[str, str]) -> list[str]:
         """Build the ``observation.state`` field names from the layout.
 
@@ -246,6 +260,8 @@ class ConverterConfig:
             )
         if "state_layout" in raw:
             raw["state_layout"] = tuple(raw["state_layout"])
+        if "tasks" in raw and raw["tasks"] is not None:
+            raw["tasks"] = {str(key): str(value) for key, value in dict(raw["tasks"]).items()}
         known = {f.name for f in cls.__dataclass_fields__.values()}
         extra = {key: value for key, value in raw.items() if key not in known}
         settings = {key: value for key, value in raw.items() if key in known}

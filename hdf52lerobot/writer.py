@@ -313,20 +313,23 @@ class DatasetWriter:
         pq.write_table(pa.Table.from_pandas(frame), path)
 
     def _write_info(self) -> None:
+        # Key order matters in that a person opens this file to answer "how big
+        # is this dataset, and what robot", and `features` is hundreds of lines.
+        # Same order as every TacVerse dataset: the totals first, features last.
         info = {
             "codebase_version": self.config.codebase_version,
-            "fps": self.config.fps,
-            "features": self.features,
+            "robot_type": self.config.robot_type,
             "total_episodes": len(self._episodes),
             "total_frames": self._total_frames,
             "total_tasks": len(self._tasks),
             "chunks_size": self.config.chunks_size,
             "data_files_size_in_mb": self.config.data_files_size_in_mb,
             "video_files_size_in_mb": self.config.video_files_size_in_mb,
+            "fps": self.config.fps,
+            "splits": {"train": f"0:{len(self._episodes)}"},
             "data_path": DATA_PATH,
             "video_path": VIDEO_PATH,
-            "robot_type": self.config.robot_type,
-            "splits": {"train": f"0:{len(self._episodes)}"},
+            "features": self.features,
         }
         path = self.root / "meta" / "info.json"
         path.parent.mkdir(parents=True, exist_ok=True)

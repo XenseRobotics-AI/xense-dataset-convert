@@ -65,6 +65,8 @@ class VideoStream:
     timestamps: np.ndarray
     width: int
     height: int
+    frames: int = -1
+    """Frames the file actually holds. ``-1`` when it was not counted."""
     kind: str = VIDEO
     transform: tuple[str, ...] = ()
 
@@ -150,14 +152,24 @@ def _read_sidecar(video_path: Path) -> np.ndarray:
     return timestamps
 
 
-def _probe_video(path: Path) -> tuple[int, int]:
+def _probe_video(path: Path) -> tuple[int, int, int]:
+    """``(width, height, frames)`` without decoding a single frame.
+
+    The frame count comes from demuxing, which reads the packets but does not
+    decode them -- a few milliseconds against a few hundred. It matters because
+    a recorder that died mid-session leaves a video shorter than its timestamp
+    sidecar claims, and finding that out here means the recording can be
+    skipped before anything has been written.
+    """
     import av
 
     with av.open(str(path)) as container:
         if not container.streams.video:
             raise ValueError(f"{path.name}: contains no video stream")
         codec_context = container.streams.video[0].codec_context
-        return int(codec_context.width), int(codec_context.height)
+        width, height = int(codec_context.width), int(codec_context.height)
+        frames = sum(1 for packet in container.demux(video=0) if packet.size)
+    return width, height, frames
 
 
 def read_episode(path: str | Path, config: ConverterConfig) -> SourceEpisode:
@@ -211,13 +223,14 @@ def _add_stream(
 
     if kind == VIDEO:
         timestamps = _read_sidecar(path)
-        width, height = _probe_video(path)
+        width, height, frames = _probe_video(path)
         episode.videos[key] = VideoStream(
             key=key,
             path=path,
             timestamps=timestamps,
             width=width,
             height=height,
+            frames=frames,
             transform=transform,
         )
         return
@@ -263,6 +276,13 @@ def _validate(episode: SourceEpisode, config: ConverterConfig) -> None:
             raise ValueError(f"{episode.name}: stream {key!r} is empty")
         if np.any(np.diff(timestamps) < 0):
             raise ValueError(f"{episode.name}: stream {key!r} has non-monotonic timestamps")
+
+    for key, stream in episode.videos.items():
+        if 0 <= stream.frames < len(stream.timestamps):
+            raise ValueError(
+                f"{episode.name}: {key} holds {stream.frames} frame(s) but its sidecar "
+                f"lists {len(stream.timestamps)} -- the recording was cut short"
+            )
 
     for key, gripper in episode.grippers.items():
         outside = np.count_nonzero(

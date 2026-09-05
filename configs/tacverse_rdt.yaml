@@ -40,10 +40,18 @@ pair: grid
 # axis is never lost.
 keep_source_timestamp: true
 
-# Per-stream distance between a frame's sample and its grid tick. Stalls up to
-# ~170 ms exist in these recordings; 3 frames (150 ms) is the reject limit and
-# anything past 2 frames is reported.
-max_sync_gap_frames: 3.0
+# Per-stream distance between a frame's sample and its grid tick, in frames.
+#
+# Measured over 256 recordings spread across all 32 stations, the worst gap in
+# an episode is 61 ms at the median and 77 ms at p90 -- but the tail runs to
+# 765 ms. Rejecting at 3 frames (150 ms) would throw away 2.7% of episodes over
+# a single stale tick in a session of thousands of them; 6 frames (300 ms)
+# rejects 0.4%, which is the tail of recordings with a real hole in them.
+#
+# So: reject a recording with a hole, keep the rest and report them. Every
+# episode's worst gap and its count of loose frames go to meta/sources.json,
+# which is what a quality pass downstream filters on.
+max_sync_gap_frames: 6.0
 warn_sync_gap_frames: 2.0
 
 master_clock: left_tcp
@@ -53,16 +61,21 @@ state_layout:
   - right_tcp
   - right_gripper
 
+# The codec suffix is part of every video pattern on purpose. A few recordings
+# kept an abandoned `_ffv1.mkv` encode beside the real `_libsvtav1.mkv` one;
+# both would match a looser rule and the two would fight over the same stream
+# key. Naming the codec takes the leftover out of the running, and it is then
+# reported as an unmatched file rather than silently chosen.
 streams:
   # Named `side`, not `head`: this camera watches the workspace from the side,
   # and unlike a headset camera it has no pose stream to go with it.
-  - pattern: '^head_.*_mvs_mono_.*\.mkv$'
+  - pattern: '^head_.*_mvs_mono_.*_libx264\.mkv$'
     kind: video
     key: side
-  - pattern: '^(?P<side>left|right)_umi_.*_mvs_mono_.*\.mkv$'
+  - pattern: '^(?P<side>left|right)_umi_.*_mvs_mono_.*_libx264\.mkv$'
     kind: video
     key: '{side}_wrist'
-  - pattern: '^(?P<side>left|right)_umi_.*_tactile_(?P<pos>left|right)_.*\.mkv$'
+  - pattern: '^(?P<side>left|right)_umi_.*_tactile_(?P<pos>left|right)_.*_libsvtav1\.mkv$'
     kind: video
     key: '{side}_tactile_{pos}'
     # BGR bytes written as RGB, and the sensor's portrait frame: put both back

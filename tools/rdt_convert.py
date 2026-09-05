@@ -21,15 +21,20 @@ which recording is which, so those episodes cannot be filed by task until the
 capture team supplies a per-episode list. `--list` reports how many that is.
 
 Converting is resumable: a dataset whose `meta/info.json` already exists is
-left alone unless `--overwrite` is given, so an interrupted run continues where
-it stopped.
+left alone unless `--overwrite` is given, and one whose directory exists
+*without* that file is a run that was interrupted, so it is converted again
+from scratch. Only one driver may work on an output tree at a time -- a second
+one would race the first over the same directories -- which a lock file
+enforces.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime
+import fcntl
 import json
+import os
 import re
 import subprocess
 import sys
@@ -127,8 +132,12 @@ def convert_group(group: Group, output_root: Path, config_path: Path, workers: i
     from hdf52lerobot.converter import Hdf5ToLeRobotConverter
 
     destination = output_root / group.name
-    if (destination / "meta" / "info.json").exists() and not overwrite:
+    finished = (destination / "meta" / "info.json").exists()
+    if finished and not overwrite:
         return {"dataset": group.name, "status": "skipped", "reason": "already converted"}
+    # A directory without info.json is what an interrupted run leaves behind;
+    # it has to be replaced, not preserved, or the converter refuses to write.
+    replace = overwrite or destination.exists()
 
     config = ConverterConfig.from_yaml(config_path).with_overrides(task=group.task, workers=workers)
     started = time.time()
@@ -136,7 +145,7 @@ def convert_group(group: Group, output_root: Path, config_path: Path, workers: i
         inputs=group.episodes,
         output_root=destination,
         config=config,
-        overwrite=overwrite,
+        overwrite=replace,
         # One damaged recording out of thousands should cost that recording,
         # not the dataset; the skipped ones are listed in meta/sources.json.
         skip_failed_episodes=True,
@@ -184,7 +193,8 @@ def run_in_parallel(groups: list[Group], args: argparse.Namespace) -> int:
                 command.append("--overwrite")
             if args.limit:
                 command += ["--limit", str(args.limit)]
-            log = (log_dir / f"{group.name}.log").open("w", encoding="utf-8")
+            # Append: a resumed run should add to the record, not erase it.
+            log = (log_dir / f"{group.name}.log").open("a", encoding="utf-8")
             print(f"[start] {group.name}  {len(group.episodes)} episodes", flush=True)
             running.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), group))
 
@@ -249,6 +259,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     args.output.mkdir(parents=True, exist_ok=True)
+
+    # One driver per output tree. Two would hand the same dataset to two
+    # processes and let them write the same directory; the child conversions
+    # take no lock of their own, so this is where it has to be caught.
+    if not args.only:
+        lock_path = args.output / ".convert.lock"
+        lock = lock_path.open("w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print(
+                f"Another conversion is already running on {args.output} "
+                f"(lock: {lock_path}). Wait for it, or stop it first.",
+                file=sys.stderr,
+            )
+            return 3
+        lock.write(f"pid {os.getpid()} started {datetime.datetime.now().isoformat(timespec='seconds')}\n")
+        lock.flush()
+
     if args.jobs > 1 and not args.only:
         return 1 if run_in_parallel(groups, args) else 0
 

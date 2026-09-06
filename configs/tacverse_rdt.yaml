@@ -98,6 +98,12 @@ gop: 30
 preset: veryfast
 workers: 0
 
+# Threads inside each encoder and decoder. Left to FFmpeg every instance sizes
+# itself to the whole machine, and this corpus is converted several datasets at
+# a time with seven cameras each: 1100 threads on 32 cores, 390k context
+# switches a second, 29.9 s per episode against 19.4 s with this at 1.
+codec_threads: 1
+
 chunks_size: 1000
 data_files_size_in_mb: 100
 video_files_size_in_mb: 200

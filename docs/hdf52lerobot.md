@@ -42,7 +42,7 @@ anything the map does not name.
 Useful flags: `--config` (rule file, default
 [`configs/hdf52lerobot.yaml`](../configs/hdf52lerobot.yaml)), `--fps`,
 `--quat-order`, `--pair`, `--max-sync-gap-frames`, `--warn-sync-gap-frames`,
-`--crf`, `--gop`, `--preset`, `--workers`, `--overwrite`.
+`--crf`, `--gop`, `--preset`, `--workers`, `--codec-threads`, `--overwrite`.
 
 ## What it reads
 
@@ -107,6 +107,12 @@ Useful flags: `--config` (rule file, default
   the declared fps with a short GOP — the sources carry 200+ frame GOPs, which
   makes LeRobot's random-access reads crawl, and LeRobot's default
   `tolerance_s = 1e-4` requires frame *i* to sit exactly at *i/fps*.
+- **Threads**: `--workers` sets how many cameras of one episode are encoded at
+  once; `--codec-threads` (default 1) sets how many threads run *inside* each
+  encoder and decoder. Left to FFmpeg (`0`), every instance sizes itself to the
+  whole machine, so a bulk run converting several datasets at once ends up many
+  times oversubscribed — measured at 1100 threads on 32 cores, 390k context
+  switches a second, and an episode taking 29.9 s against 19.4 s at `1`.
 - **Frame transforms**: a `video` rule can carry `transform:`, applied per camera
   before encoding, so the mp4, the feature shape and the statistics all describe
   the same picture. `bgr_to_rgb` reverses the channels; `transpose` swaps height

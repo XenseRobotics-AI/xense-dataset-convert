@@ -173,7 +173,18 @@ class ConverterConfig:
 
     preset: str = "veryfast"
     workers: int = 0
-    """Video encoder threads across camera keys; 0 selects half the CPUs."""
+    """Cameras encoded in parallel within one episode; 0 selects half the CPUs."""
+
+    codec_threads: int = 1
+    """Threads *inside* each encoder and decoder. 0 hands the choice to FFmpeg,
+    which sizes every instance to the whole machine.
+
+    One conversion runs an encoder and a decoder per camera at once, and a bulk
+    run puts several conversions on the same machine, so FFmpeg's default has
+    every one of those instances claiming all the cores: 5 jobs x 7 cameras was
+    measured at 1100 threads on 32 cores, a third of a million context switches
+    a second, and an episode taking 29.9 s that takes 19.4 s with this set to 1.
+    Parallelism belongs at the camera and job level, where it is counted."""
 
     chunks_size: int = 1000
     data_files_size_in_mb: int = 100
@@ -197,6 +208,8 @@ class ConverterConfig:
             raise ValueError("warn_sync_gap_frames must be positive")
         if self.gop <= 0:
             raise ValueError("gop must be positive")
+        if self.codec_threads < 0:
+            raise ValueError("codec_threads must be 0 (auto) or positive")
         self.state_layout = tuple(self.state_layout)
         self.streams = tuple(self.streams)
         if not self.state_layout:

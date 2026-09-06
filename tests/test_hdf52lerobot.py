@@ -623,6 +623,35 @@ def test_task_map_file_is_read_by_the_cli(tmp_path: Path):
         load_task_map(tmp_path / "list.yaml")
 
 
+def test_codec_threads_reach_the_encoder(tmp_path: Path):
+    """FFmpeg's default sizes every codec instance to the whole machine; this
+    setting is what keeps a parallel run from oversubscribing it."""
+    from hdf52lerobot.video import VideoAggregator
+
+    config = ConverterConfig(fps=FPS, gop=4, preset="ultrafast", codec_threads=1)
+    aggregator = VideoAggregator(tmp_path, "observation.images.cam", WIDTH, HEIGHT, config)
+    aggregator._open()
+    try:
+        assert aggregator._stream.codec_context.thread_count == 1
+        assert str(aggregator._stream.codec_context.thread_type) in ("NONE", "ThreadType.NONE", "0")
+    finally:
+        aggregator.close()
+
+    # 0 keeps FFmpeg's own choice, for a machine running one conversion.
+    auto = VideoAggregator(
+        tmp_path / "auto", "observation.images.cam", WIDTH, HEIGHT,
+        replace(config, codec_threads=0),
+    )
+    auto._open()
+    try:
+        assert auto._stream.codec_context.thread_count != 1
+    finally:
+        auto.close()
+
+    with pytest.raises(ValueError, match="codec_threads"):
+        ConverterConfig(codec_threads=-1)
+
+
 def test_shipped_config_loads():
     config = ConverterConfig.from_yaml(
         Path(__file__).resolve().parent.parent / "configs" / "hdf52lerobot.yaml"

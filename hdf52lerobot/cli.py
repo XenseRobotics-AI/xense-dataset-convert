@@ -81,6 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preset", help="libx264 preset.")
     parser.add_argument("--workers", type=int, help="Camera keys encoded in parallel.")
     parser.add_argument(
+        "--codec-threads",
+        dest="codec_threads",
+        type=int,
+        help="Threads inside each encoder/decoder (0 = FFmpeg's choice, which "
+        "sizes every instance to the whole machine). Default 1.",
+    )
+    parser.add_argument(
         "--overwrite", action="store_true", help="Delete the output directory if it exists."
     )
     return parser
@@ -105,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         gop=args.gop,
         preset=args.preset,
         workers=args.workers,
+        codec_threads=args.codec_threads,
     )
 
     converter = Hdf5ToLeRobotConverter(

@@ -115,6 +115,13 @@ class VideoAggregator:
         self._stream = self._container.add_stream(
             self.config.vcodec, self.config.fps, options=options
         )
+        if self.config.codec_threads:
+            # Left to FFmpeg, every encoder sizes itself to the whole machine,
+            # and a run with several cameras and several jobs then oversubscribes
+            # it many times over. See ConverterConfig.codec_threads.
+            self._stream.codec_context.thread_count = self.config.codec_threads
+            if self.config.codec_threads == 1:
+                self._stream.codec_context.thread_type = "NONE"
         self._stream.pix_fmt = self.config.pix_fmt
         self._stream.width = self.output_width
         self._stream.height = self.output_height
@@ -187,6 +194,8 @@ class VideoAggregator:
         first_frame = self._frames_in_file
 
         with av.open(str(source_path)) as container:
+            if self.config.codec_threads:
+                container.streams.video[0].thread_count = self.config.codec_threads
             decoded = container.decode(video=0)
             source_position = -1
             current = None

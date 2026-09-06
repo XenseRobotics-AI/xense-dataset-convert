@@ -106,15 +106,11 @@ class VideoAggregator:
         path = self.current_path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._container = av.open(str(path), "w")
-        options = {
-            "crf": str(self.config.crf),
-            "g": str(self.config.gop),
-            "keyint_min": str(self.config.gop),
-            "preset": self.config.preset,
-        }
         self._stream = self._container.add_stream(
-            self.config.vcodec, self.config.fps, options=options
+            self.config.vcodec, self.config.fps, options=self.config.encoder_options()
         )
+        # A hardware encoder does its work on the GPU's own engine, so the
+        # thread count below governs only the frames handed to it.
         if self.config.codec_threads:
             # Left to FFmpeg, every encoder sizes itself to the whole machine,
             # and a run with several cameras and several jobs then oversubscribes

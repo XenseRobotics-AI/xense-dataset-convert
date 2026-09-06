@@ -24,7 +24,9 @@ from hdf52lerobot.converter import (  # noqa: E402
     discover_episodes,
 )
 from hdf52lerobot.imaging import (  # noqa: E402
+    bgr_to_rgb,
     compose,
+    transpose,
     transformed_size,
     validate_transforms,
 )
@@ -170,6 +172,9 @@ def test_bgr_to_rgb_and_transpose_match_the_capture_path():
     assert both.shape == (4, 7, 3)
     assert both[0, 0].tolist() == [30, 20, 10]
     assert both.flags["C_CONTIGUOUS"]
+    # Composing must give exactly what applying the steps one at a time gives,
+    # even though it copies once instead of per step.
+    assert np.array_equal(both, transpose(bgr_to_rgb(frame)))
 
 
 def test_transformed_size_swaps_only_for_transpose():
@@ -307,19 +312,32 @@ def test_action_is_the_next_state():
     assert np.array_equal(actions[-1], states[-1])
 
 
-def test_image_stats_from_running_moments_match_a_direct_reduction():
+def test_image_stats_match_a_plain_numpy_reduction():
+    """Running moments over batches must equal reducing every pixel at once."""
     from hdf52lerobot.stats import _prepare_image, reduce_images
 
     rng = np.random.default_rng(1)
-    frames = [rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8) for _ in range(9)]
+    # More frames than one batch, so the batching itself is exercised.
+    frames = [rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8) for _ in range(150)]
+    prepared = [_prepare_image(frame) for frame in frames]
+    pixels = np.concatenate([frame.reshape(3, -1) for frame in prepared], axis=1) / 255.0
+    expected = {
+        "min": pixels.min(axis=1),
+        "max": pixels.max(axis=1),
+        "mean": pixels.mean(axis=1),
+        "std": pixels.std(axis=1),
+    }
+
     accumulator = StatsAccumulator()
-    accumulator.add_episode({}, {"cam": frames[:4]})
-    accumulator.add_episode({}, {"cam": frames[4:]})
+    accumulator.add_episode({}, {"cam": frames[:70]})
+    accumulator.add_episode({}, {"cam": frames[70:]})
     streamed = accumulator.finalize()["cam"]
-    direct = reduce_images([_prepare_image(frame) for frame in frames])
-    for stat in ("min", "max", "mean", "std"):
-        assert np.allclose(streamed[stat], direct[stat], atol=1e-9), stat
-    assert streamed["count"] == direct["count"] == [9]
+    direct = reduce_images(prepared)
+
+    for stat, want in expected.items():
+        assert np.allclose(np.array(streamed[stat]).ravel(), want, atol=1e-12), stat
+        assert np.allclose(np.array(direct[stat]).ravel(), want, atol=1e-12), stat
+    assert streamed["count"] == direct["count"] == [150]
 
 
 def test_downsample_hwc_returns_a_contiguous_copy_at_lerobot_size():
@@ -508,6 +526,9 @@ def test_tacverse_config_loads():
         Path(__file__).resolve().parent.parent / "configs" / "tacverse_rdt.yaml"
     )
     assert (config.fps, config.pair, config.keep_source_timestamp) == (20, "grid", True)
+    # Encoding runs on the GPU; the dataset still records plain h264.
+    assert config.vcodec == "h264_nvenc" and config.codec_threads == 1
+    assert config.encoder_options()["rc"] == "constqp"
     assert config.robot_type == "bi_rdt_gripper"
     # The third camera is a side view without a pose, and the tactile streams
     # carry the two transforms the capture path would have applied.
@@ -650,6 +671,36 @@ def test_codec_threads_reach_the_encoder(tmp_path: Path):
 
     with pytest.raises(ValueError, match="codec_threads"):
         ConverterConfig(codec_threads=-1)
+
+
+def test_encoder_options_follow_the_encoder():
+    """x264 takes CRF and a keyframe floor; NVENC takes a rate-control mode and
+    a QP, and rejects the other two."""
+    software = ConverterConfig(vcodec="libx264", crf=23, gop=30, preset="veryfast")
+    assert software.encoder_options() == {
+        "g": "30", "preset": "veryfast", "crf": "23", "keyint_min": "30",
+    }
+    assert software.is_hardware_encoder is False
+
+    hardware = ConverterConfig(
+        vcodec="h264_nvenc", crf=21, gop=30, preset="p4", video_options={"tune": "hq"}
+    )
+    assert hardware.is_hardware_encoder is True
+    assert hardware.encoder_options() == {
+        "g": "30", "preset": "p4", "rc": "constqp", "qp": "21", "tune": "hq",
+    }
+    # video_options has the last word, so a profile can override a derived one.
+    assert ConverterConfig(video_options={"crf": "18"}).encoder_options()["crf"] == "18"
+
+
+def test_info_records_the_format_not_the_encoder():
+    """A dataset reads the same whether its video came off the CPU or the GPU."""
+    from hdf52lerobot.features import video_info
+
+    for vcodec in ("libx264", "h264_nvenc", "h264_qsv"):
+        config = ConverterConfig(vcodec=vcodec)
+        assert video_info(640, 480, config)["video.codec"] == "h264"
+    assert video_info(640, 480, ConverterConfig(vcodec="hevc_nvenc"))["video.codec"] == "hevc"
 
 
 def test_shipped_config_loads():

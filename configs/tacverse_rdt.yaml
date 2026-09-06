@@ -91,11 +91,20 @@ streams:
 # Sources are 480x480 h264 (side, wrists) and 400x700 AV1 (tactile); all are
 # re-encoded to CFR h264 at the declared fps. After `transpose` the tactile
 # features are 700x400, matching TacVerse.
-vcodec: libx264
+#
+# Encoding runs on the GPU's NVENC engine. Encoding was two thirds of the CPU
+# work in this pipeline, and moving it off leaves the cores to decoding and the
+# tactile transform. `crf` is NVENC's constant QP here, not x264's CRF: at QP 21
+# a tactile stream came out at 41.85 dB PSNR against libx264 CRF 23's 41.75 dB,
+# in a slightly smaller file, at 3.1x the speed. `meta/info.json` still records
+# the codec as `h264`, so a reader cannot tell which engine produced it.
+vcodec: h264_nvenc
 pix_fmt: yuv420p
-crf: 23
+crf: 21
 gop: 30
-preset: veryfast
+preset: p4
+video_options:
+  tune: hq
 workers: 0
 
 # Threads inside each encoder and decoder. Left to FFmpeg every instance sizes

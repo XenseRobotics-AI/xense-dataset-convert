@@ -165,8 +165,21 @@ class ConverterConfig:
     streams: tuple[StreamRule, ...] = DEFAULT_STREAM_RULES
 
     vcodec: str = "libx264"
+    """Encoder. A software encoder (``libx264``, ``libx265``) takes its quality
+    from ``crf``; an NVENC encoder (``h264_nvenc``, ``hevc_nvenc``) is driven at
+    constant QP instead, and the options are shaped accordingly."""
+
     pix_fmt: str = "yuv420p"
+
     crf: int = 23
+    """The encoder's constant-quality number: CRF for the software encoders,
+    QP for NVENC. The scales differ -- on this corpus's tactile video, NVENC at
+    QP 21 matches libx264 at CRF 23 on PSNR -- so a profile that changes the
+    encoder changes this with it."""
+
+    video_options: dict[str, str] = field(default_factory=dict)
+    """Encoder options merged over the derived ones, for anything the fields
+    above do not name (``tune``, ``rc-lookahead``, ``spatial-aq``)."""
     gop: int = 30
     """Keyframe interval. Sources arrive with GOPs of 200+ frames, which makes
     LeRobot's random-access reads crawl; TacCap sits near 57."""
@@ -227,6 +240,24 @@ class ConverterConfig:
     def warn_sync_gap_s(self) -> float:
         return self.warn_sync_gap_frames / self.fps
 
+    @property
+    def is_hardware_encoder(self) -> bool:
+        return "nvenc" in self.vcodec or "qsv" in self.vcodec or "vaapi" in self.vcodec
+
+    def encoder_options(self) -> dict[str, str]:
+        """Options for ``add_stream``, shaped for the encoder in use.
+
+        The software encoders take ``crf`` plus a minimum keyframe interval;
+        NVENC has neither and wants an explicit rate-control mode with a QP.
+        """
+        options = {"g": str(self.gop), "preset": self.preset}
+        if self.is_hardware_encoder:
+            options.update({"rc": "constqp", "qp": str(self.crf)})
+        else:
+            options.update({"crf": str(self.crf), "keyint_min": str(self.gop)})
+        options.update({key: str(value) for key, value in self.video_options.items()})
+        return options
+
     def task_for(self, episode_name: str) -> str:
         """The task text for one recording directory."""
         return self.tasks.get(episode_name, self.task)
@@ -273,6 +304,10 @@ class ConverterConfig:
             )
         if "state_layout" in raw:
             raw["state_layout"] = tuple(raw["state_layout"])
+        if "video_options" in raw and raw["video_options"] is not None:
+            raw["video_options"] = {
+                str(key): str(value) for key, value in dict(raw["video_options"]).items()
+            }
         if "tasks" in raw and raw["tasks"] is not None:
             raw["tasks"] = {str(key): str(value) for key, value in dict(raw["tasks"]).items()}
         known = {f.name for f in cls.__dataclass_fields__.values()}

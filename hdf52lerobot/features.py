@@ -14,7 +14,19 @@ from .source import SourceEpisode
 SCALAR_FEATURES = ("episode_index", "frame_index", "index", "task_index")
 SOURCE_TIMESTAMP = "observation.source_timestamp"
 
-CODEC_NAMES = {"libx264": "h264", "libx265": "hevc", "libsvtav1": "av1"}
+# What `meta/info.json` calls the codec: the container's name for the format,
+# not the encoder that produced it, so a dataset reads the same whether its
+# video came off the CPU or the GPU.
+CODEC_NAMES = {
+    "libx264": "h264",
+    "h264_nvenc": "h264",
+    "h264_qsv": "h264",
+    "h264_vaapi": "h264",
+    "libx265": "hevc",
+    "hevc_nvenc": "hevc",
+    "libsvtav1": "av1",
+    "av1_nvenc": "av1",
+}
 
 
 def video_info(width: int, height: int, config: ConverterConfig) -> dict[str, Any]:

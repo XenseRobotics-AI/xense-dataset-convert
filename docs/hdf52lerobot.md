@@ -107,6 +107,14 @@ Useful flags: `--config` (rule file, default
   the declared fps with a short GOP — the sources carry 200+ frame GOPs, which
   makes LeRobot's random-access reads crawl, and LeRobot's default
   `tolerance_s = 1e-4` requires frame *i* to sit exactly at *i/fps*.
+- **Encoder**: `vcodec` picks it, and the options are shaped to suit — the
+  software encoders take `crf` plus a keyframe floor, NVENC takes a
+  rate-control mode and a QP. `crf` is the constant-quality number for
+  whichever is in use, and the scales differ: on this corpus's tactile video,
+  `h264_nvenc` at QP 21 matched `libx264` at CRF 23 on PSNR (41.85 dB against
+  41.75 dB) in a slightly smaller file at 3.1x the speed. `meta/info.json`
+  records the format (`h264`), never the encoder, so a dataset reads the same
+  either way.
 - **Threads**: `--workers` sets how many cameras of one episode are encoded at
   once; `--codec-threads` (default 1) sets how many threads run *inside* each
   encoder and decoder. Left to FFmpeg (`0`), every instance sizes itself to the

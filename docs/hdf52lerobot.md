@@ -79,9 +79,25 @@ Useful flags: `--config` (rule file, default
   *i* of the master clock, which is right when all streams share one trigger and
   have equal length. `--pair nearest` re-pairs by real timestamps instead, and is
   used automatically for any stream whose length differs from the master's.
+  `--pair grid` is for recorders whose loop does not run at the declared fps: it
+  pairs by iteration like `index`, then lays a uniform grid at `fps` over the
+  episode and gives every tick the nearest iteration. A tick inside a stall
+  repeats the previous iteration, iterations between ticks are dropped, and
+  both counts are logged per stream and written to `meta/sources.json`.
   Either way the pairing is validated against the real timestamps: beyond
   `--warn-sync-gap-frames` (1.5) frames get reported, beyond
   `--max-sync-gap-frames` (3.0) the episode is rejected.
+- **Source time**: with `keep_source_timestamp: true` every frame also carries
+  `observation.source_timestamp`, the recorder's absolute time (master clock,
+  int64 nanoseconds since the Unix epoch) of the iteration it came from.
+  `timestamp` stays `frame_index / fps` as LeRobot requires; this column keeps
+  the real time axis. It is an int64 rather than float64 seconds because
+  LeRobot's torch transform hands float scalars back as float32, which cannot
+  hold a Unix time to better than a few seconds.
+- **Provenance**: `meta/sources.json` records the tool version, the full config,
+  the inputs and, per episode, the recording directory, its files, frame counts,
+  duplicated / dropped counts and tick offsets. LeRobot ignores extra files
+  under `meta/`.
 - **Video**: all streams are re-encoded (not remuxed) to H.264 / yuv420p / CFR at
   the declared fps with a short GOP — the sources carry 200+ frame GOPs, which
   makes LeRobot's random-access reads crawl, and LeRobot's default
@@ -96,6 +112,18 @@ Useful flags: `--config` (rule file, default
 - The time axis is index-based, so a recording that stalls mid-episode is written
   as if it ran at constant speed. The converter logs the measured warp against a
   uniform grid so you can see how large it is per episode.
+
+## Profiles
+
+[`configs/tacverse_rdt.yaml`](../configs/tacverse_rdt.yaml) is the profile for
+the TacVerse-RDT recordings: same rig layout, `pair: grid` at 20 Hz because that
+recorder's loop stalls, and `keep_source_timestamp: true`.
+
+```bash
+hdf52lerobot --config configs/tacverse_rdt.yaml \
+  --input /archive/TacVerse-RDT/035 --input /archive/TacVerse-RDT/036 \
+  --output /archive/TacVerse/<name> --task "<task text>"
+```
 
 ## Extending it (new cameras, head pose)
 

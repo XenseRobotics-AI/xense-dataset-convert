@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
+import dataclasses
+import datetime
+import json
 import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
 from .config import ConverterConfig
-from .features import build_features, video_features
+from .features import SOURCE_TIMESTAMP, build_features, video_features
 from .geometry import quaternions_to_rotation_6d, to_wxyz
 from .logger import get_logger
 from .source import SourceEpisode, read_episode
-from .stats import StatsAccumulator, sample_positions
+from .stats import StatsAccumulator, downsample_hwc, sample_positions
 from .sync import SyncReport, build_sync
 from .video import VideoAggregator
-from .writer import DatasetWriter, VideoPlacement
+from .writer import DatasetWriter, VideoPlacement, seconds_to_ns
 
 logger = get_logger("hdf52lerobot")
 
@@ -118,19 +121,49 @@ class Hdf5ToLeRobotConverter:
             for stream in first.videos.values()
         }
         accumulator = StatsAccumulator()
+        sources: list[dict[str, Any]] = []
 
+        # One pool for the whole run: a pool per episode means fresh threads,
+        # and every fresh thread can pull a new malloc arena that is never
+        # returned, so memory would creep up with the episode count.
+        workers = self.config.workers or max(1, (os.cpu_count() or 2) // 2)
+        pool = ThreadPoolExecutor(max_workers=min(workers, len(first.videos) or 1))
         try:
             for position, path in enumerate(episode_paths):
                 episode = first if position == 0 else read_episode(path, self.config)
                 self._check_layout(episode, first, state_names)
-                self._convert_episode(episode, writer, aggregators, accumulator)
+                sources.append(self._convert_episode(episode, writer, aggregators, accumulator, pool))
         finally:
+            pool.shutdown(wait=True)
             for aggregator in aggregators.values():
                 aggregator.close()
 
         writer.finalize(accumulator.finalize())
+        self._write_sources(sources)
         logger.info(f"Done: {self.output_root}")
         return self.output_root
+
+    def _write_sources(self, sources: list[dict[str, Any]]) -> None:
+        """``meta/sources.json``: where every episode came from and how it was resampled.
+
+        Not part of the LeRobot layout, which ignores extra files under meta/;
+        it is what lets a downstream tool map an episode back to its recording.
+        """
+        from . import __version__
+
+        config = dataclasses.asdict(self.config)
+        config["streams"] = [dataclasses.asdict(rule) for rule in self.config.streams]
+        document = {
+            "format": "hdf52lerobot/sources",
+            "format_version": 1,
+            "converted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            "hdf52lerobot_version": __version__,
+            "inputs": [str(Path(entry).expanduser().resolve()) for entry in self.inputs],
+            "config": config,
+            "episodes": sources,
+        }
+        path = self.output_root / "meta" / "sources.json"
+        path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     # -- internals -----------------------------------------------------------
 
@@ -158,7 +191,9 @@ class Hdf5ToLeRobotConverter:
         writer: DatasetWriter,
         aggregators: dict[str, VideoAggregator],
         accumulator: StatsAccumulator,
-    ) -> None:
+        pool: ThreadPoolExecutor,
+    ) -> dict[str, Any]:
+        """Write one episode; returns its ``meta/sources.json`` entry."""
         sync = build_sync(episode, self.config)
         logger.info(f"{episode.name}: {sync.length} frames @ {self.config.fps}fps")
         for line in sync.describe():
@@ -176,43 +211,69 @@ class Hdf5ToLeRobotConverter:
 
         placements: dict[str, VideoPlacement] = {}
         samples: dict[str, list[np.ndarray]] = {}
-        workers = self.config.workers or max(1, (os.cpu_count() or 2) // 2)
-        with ThreadPoolExecutor(max_workers=min(workers, len(episode.videos) or 1)) as pool:
-            futures = {
-                stream.feature: pool.submit(
-                    aggregators[stream.feature].append,
-                    stream.path,
-                    sync.indices_for(key),
-                    positions,
-                )
-                for key, stream in episode.videos.items()
-            }
-            for feature, future in futures.items():
-                result = future.result()
-                placements[feature] = VideoPlacement(
-                    chunk_index=result.chunk_index,
-                    file_index=result.file_index,
-                    from_timestamp=result.from_timestamp,
-                    to_timestamp=result.to_timestamp,
-                )
-                samples[feature] = result.samples
+        futures = {
+            stream.feature: pool.submit(
+                aggregators[stream.feature].append,
+                stream.path,
+                sync.indices_for(key),
+                positions,
+                downsample_hwc,
+            )
+            for key, stream in episode.videos.items()
+        }
+        for feature, future in futures.items():
+            result = future.result()
+            placements[feature] = VideoPlacement(
+                chunk_index=result.chunk_index,
+                file_index=result.file_index,
+                from_timestamp=result.from_timestamp,
+                to_timestamp=result.to_timestamp,
+            )
+            samples[feature] = result.samples
 
-        record = writer.add_episode(states, actions, self.config.task, placements)
+        record = writer.add_episode(
+            states,
+            actions,
+            self.config.task,
+            placements,
+            source_timestamps=sync.tick_timestamps if self.config.keep_source_timestamp else None,
+        )
         length = record.length
         # The same columns the parquet rows carry, so the per-episode block and
         # stats.json describe exactly what was written.
-        record.stats = accumulator.add_episode(
-            numeric={
-                "observation.state": states,
-                "action": actions,
-                "timestamp": np.arange(length) / self.config.fps,
-                "frame_index": np.arange(length),
-                "episode_index": np.full(length, record.episode_index),
-                "index": np.arange(record.dataset_from_index, record.dataset_to_index),
-                "task_index": np.full(length, writer.task_index(self.config.task)),
+        numeric = {
+            "observation.state": states,
+            "action": actions,
+            "timestamp": np.arange(length) / self.config.fps,
+            "frame_index": np.arange(length),
+            "episode_index": np.full(length, record.episode_index),
+            "index": np.arange(record.dataset_from_index, record.dataset_to_index),
+            "task_index": np.full(length, writer.task_index(self.config.task)),
+        }
+        if self.config.keep_source_timestamp:
+            numeric[SOURCE_TIMESTAMP] = seconds_to_ns(sync.tick_timestamps)
+        record.stats = accumulator.add_episode(numeric=numeric, images=samples)
+
+        offsets_ms = np.abs(sync.warp_s) * 1000.0
+        return {
+            "episode_index": record.episode_index,
+            "source_dir": str(episode.path),
+            "source_parent": episode.path.parent.name,
+            "task": self.config.task,
+            "frames": length,
+            "source_iterations": sync.source_length,
+            "pair": sync.mode,
+            "duplicated_frames": sync.duplicated if sync.mode == "grid" else 0,
+            "dropped_iterations": sync.dropped if sync.mode == "grid" else 0,
+            "tick_offset_ms": {
+                "p50": round(float(np.percentile(offsets_ms, 50)), 1),
+                "p95": round(float(np.percentile(offsets_ms, 95)), 1),
+                "max": round(float(offsets_ms.max()), 1),
             },
-            images=samples,
-        )
+            "first_source_timestamp": float(sync.tick_timestamps[0]),
+            "last_source_timestamp": float(sync.tick_timestamps[-1]),
+            "files": sorted(stream.path.name for stream in episode.all_streams().values()),
+        }
 
 
 __all__ = [

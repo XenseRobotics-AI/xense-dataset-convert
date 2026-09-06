@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xense-dataset-convert"
-version = "0.3.3"
+version = "0.3.4"
 description = "Robot dataset format converters: LeRobot <-> MCAP, LeRobot -> Zarr, raw UMI HDF5 -> LeRobot"
 readme = "README.md"
 

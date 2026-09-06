@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from .config import ConverterConfig
+from .features import SOURCE_TIMESTAMP
 
 DATA_PATH = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
 VIDEO_PATH = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
@@ -67,6 +68,7 @@ class DatasetWriter:
         self.video_keys = list(video_keys)
 
         self.state_dim = len(features["observation.state"]["names"])
+        self.source_timestamp = SOURCE_TIMESTAMP in features
         self._buffer: list[dict[str, np.ndarray]] = []
         self._buffer_rows = 0
         self._data_chunk_index = 0
@@ -91,8 +93,15 @@ class DatasetWriter:
         actions: np.ndarray,
         task: str,
         videos: dict[str, VideoPlacement],
+        source_timestamps: np.ndarray | None = None,
     ) -> EpisodeRecord:
-        """Append one episode's frames; returns its ``meta/episodes`` row."""
+        """Append one episode's frames; returns its ``meta/episodes`` row.
+
+        Args:
+            source_timestamps: Absolute recorder time per frame in seconds,
+                required when the features carry ``observation.source_timestamp``;
+                stored as int64 nanoseconds.
+        """
         states = np.asarray(states, dtype=np.float32)
         actions = np.asarray(actions, dtype=np.float32)
         if states.shape != actions.shape:
@@ -104,17 +113,23 @@ class DatasetWriter:
         episode_index = len(self._episodes)
         self._roll_data_file_if_needed()
 
-        self._buffer.append(
-            {
-                "observation.state": states,
-                "action": actions,
-                "timestamp": (np.arange(length) / self.config.fps).astype(np.float32),
-                "frame_index": np.arange(length, dtype=np.int64),
-                "episode_index": np.full(length, episode_index, dtype=np.int64),
-                "index": np.arange(self._total_frames, self._total_frames + length, dtype=np.int64),
-                "task_index": np.full(length, self.task_index(task), dtype=np.int64),
-            }
-        )
+        columns = {
+            "observation.state": states,
+            "action": actions,
+            "timestamp": (np.arange(length) / self.config.fps).astype(np.float32),
+            "frame_index": np.arange(length, dtype=np.int64),
+            "episode_index": np.full(length, episode_index, dtype=np.int64),
+            "index": np.arange(self._total_frames, self._total_frames + length, dtype=np.int64),
+            "task_index": np.full(length, self.task_index(task), dtype=np.int64),
+        }
+        if self.source_timestamp:
+            if source_timestamps is None:
+                raise ValueError(f"{SOURCE_TIMESTAMP} is a feature, so source_timestamps is required")
+            stamps = np.asarray(source_timestamps, dtype=np.float64)
+            if stamps.shape != (length,):
+                raise ValueError(f"expected {length} source timestamps, got shape {stamps.shape}")
+            columns[SOURCE_TIMESTAMP] = seconds_to_ns(stamps)
+        self._buffer.append(columns)
         self._buffer_rows += length
 
         record = EpisodeRecord(
@@ -134,8 +149,9 @@ class DatasetWriter:
     def _roll_data_file_if_needed(self) -> None:
         """Flush the buffer and advance the file index once it exceeds the budget."""
         limit = self.config.data_files_size_in_mb * 1024 * 1024
-        # 2 float32 vectors + 5 int64 scalars + 1 float32 scalar per row.
-        row_bytes = 2 * 4 * self.state_dim + 5 * 8 + 4
+        # 2 float32 vectors + 5 int64 scalars + 1 float32 scalar per row, plus
+        # the optional float64 source timestamp.
+        row_bytes = 2 * 4 * self.state_dim + 5 * 8 + 4 + (8 if self.source_timestamp else 0)
         if self._buffer_rows * row_bytes < limit:
             return
         self._flush_data()
@@ -158,31 +174,28 @@ class DatasetWriter:
         # older pyarrow; current pyarrow writes the spec-compliant "element". The
         # logical type is identical and LeRobot reads both, so we keep the default.
         vector_type = pa.list_(pa.field("item", pa.float32()), self.state_dim)
-        schema = pa.schema(
-            [
-                pa.field("observation.state", vector_type, nullable=False),
-                pa.field("action", vector_type, nullable=False),
-                pa.field("timestamp", pa.float32(), nullable=False),
-                pa.field("frame_index", pa.int64(), nullable=False),
-                pa.field("episode_index", pa.int64(), nullable=False),
-                pa.field("index", pa.int64(), nullable=False),
-                pa.field("task_index", pa.int64(), nullable=False),
-            ]
-        )
-        table = pa.table(
-            {
-                "observation.state": _fixed_size_list(
-                    columns["observation.state"], vector_type
-                ),
-                "action": _fixed_size_list(columns["action"], vector_type),
-                "timestamp": pa.array(columns["timestamp"], type=pa.float32()),
-                "frame_index": pa.array(columns["frame_index"], type=pa.int64()),
-                "episode_index": pa.array(columns["episode_index"], type=pa.int64()),
-                "index": pa.array(columns["index"], type=pa.int64()),
-                "task_index": pa.array(columns["task_index"], type=pa.int64()),
-            },
-            schema=schema,
-        )
+        fields = [
+            pa.field("observation.state", vector_type, nullable=False),
+            pa.field("action", vector_type, nullable=False),
+            pa.field("timestamp", pa.float32(), nullable=False),
+            pa.field("frame_index", pa.int64(), nullable=False),
+            pa.field("episode_index", pa.int64(), nullable=False),
+            pa.field("index", pa.int64(), nullable=False),
+            pa.field("task_index", pa.int64(), nullable=False),
+        ]
+        arrays = {
+            "observation.state": _fixed_size_list(columns["observation.state"], vector_type),
+            "action": _fixed_size_list(columns["action"], vector_type),
+            "timestamp": pa.array(columns["timestamp"], type=pa.float32()),
+            "frame_index": pa.array(columns["frame_index"], type=pa.int64()),
+            "episode_index": pa.array(columns["episode_index"], type=pa.int64()),
+            "index": pa.array(columns["index"], type=pa.int64()),
+            "task_index": pa.array(columns["task_index"], type=pa.int64()),
+        }
+        if self.source_timestamp:
+            fields.append(pa.field(SOURCE_TIMESTAMP, pa.int64(), nullable=False))
+            arrays[SOURCE_TIMESTAMP] = pa.array(columns[SOURCE_TIMESTAMP], type=pa.int64())
+        table = pa.table(arrays, schema=pa.schema(fields))
         path = self.root / DATA_PATH.format(
             chunk_index=self._data_chunk_index, file_index=self._data_file_index
         )
@@ -323,6 +336,11 @@ class DatasetWriter:
         path = self.root / "meta" / "stats.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(stats, indent=4) + "\n", encoding="utf-8")
+
+
+def seconds_to_ns(seconds: np.ndarray) -> np.ndarray:
+    """Unix seconds (float64) -> int64 nanoseconds, rounded."""
+    return np.round(np.asarray(seconds, dtype=np.float64) * 1e9).astype(np.int64)
 
 
 def _fixed_size_list(values: np.ndarray, list_type):

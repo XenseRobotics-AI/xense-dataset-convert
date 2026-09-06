@@ -156,8 +156,12 @@ hdf52lerobot --input /data/SuHang --output /data/SuHang_lerobot --task "your tas
 
 Stream classification is config-driven — a new camera is one more rule in
 [`configs/hdf52lerobot.yaml`](configs/hdf52lerobot.yaml), not a code change.
-See [docs/hdf52lerobot.md](docs/hdf52lerobot.md) for the file-to-feature mapping
-and the rotation/gripper conventions.
+[`configs/tacverse_rdt.yaml`](configs/tacverse_rdt.yaml) is the profile for the
+TacVerse-RDT recordings, whose recorder loop does not run at a fixed rate: it
+resamples every episode onto a 20 Hz grid (`pair: grid`) and keeps the
+recorder's own timestamps as `observation.source_timestamp`. See
+[docs/hdf52lerobot.md](docs/hdf52lerobot.md) for the file-to-feature mapping,
+the pairing modes and the rotation/gripper conventions.
 
 ## Development
 

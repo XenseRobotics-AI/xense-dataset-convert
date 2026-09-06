@@ -1,0 +1,70 @@
+# hdf52lerobot profile for the TacVerse-RDT recordings (/archive/TacVerse-RDT/<rig>/ep_*).
+#
+# Same rig layout as configs/hdf52lerobot.yaml: head + two wrist cameras, four
+# tactile sensors, two Vive trackers, two openv2 jaw encoders, and the same
+# 20-dim observation.state. What differs is the clock. The recorder's polling
+# loop targets 30 Hz but stalls often enough to average 20 to 24 Hz, with the
+# rate changing from one episode to the next, so its iterations cannot be the
+# dataset's time axis. `pair: grid` lays a uniform 20 Hz grid over each episode
+# and takes the nearest iteration for every tick (a tick inside a stall repeats
+# the previous iteration; iterations between ticks are dropped; both are
+# reported per stream and recorded in meta/sources.json).
+#
+#   hdf52lerobot --config configs/tacverse_rdt.yaml \
+#       --input /archive/TacVerse-RDT/035 --input /archive/TacVerse-RDT/036 \
+#       --output /archive/TacVerse/<name> --task "<task text>"
+
+fps: 20
+robot_type: bi_rdt_gripper
+task: TacVerse-RDT demonstration
+
+quat_order: xyzw
+pair: grid
+
+# The recorder's own timestamp of the iteration behind each frame (int64
+# nanoseconds), kept next to LeRobot's frame_index / fps axis so the real time
+# axis is never lost.
+keep_source_timestamp: true
+
+# Per-stream distance between a frame's sample and its grid tick. Stalls up to
+# ~170 ms exist in these recordings; 3 frames (150 ms) is the reject limit and
+# anything past 2 frames is reported.
+max_sync_gap_frames: 3.0
+warn_sync_gap_frames: 2.0
+
+master_clock: left_tcp
+state_layout:
+  - left_tcp
+  - left_gripper
+  - right_tcp
+  - right_gripper
+
+streams:
+  - pattern: '^head_.*_mvs_mono_.*\.mkv$'
+    kind: video
+    key: head
+  - pattern: '^(?P<side>left|right)_umi_.*_mvs_mono_.*\.mkv$'
+    kind: video
+    key: '{side}_wrist'
+  - pattern: '^(?P<side>left|right)_umi_.*_tactile_(?P<pos>left|right)_.*\.mkv$'
+    kind: video
+    key: '{side}_tactile_{pos}'
+  - pattern: '^(?P<side>left|right)_umi_.*_tracker_.*\.hdf5$'
+    kind: pose
+    key: '{side}_tcp'
+  - pattern: '^(?P<side>left|right)_umi_.*_openv2_(?P<lo>[\d.]+)_(?P<hi>[\d.]+)\.hdf5$'
+    kind: gripper
+    key: '{side}_gripper'
+
+# Sources are 480x480 h264 (head, wrists) and 400x700 AV1 (tactile); all are
+# re-encoded to CFR h264 at the declared fps.
+vcodec: libx264
+pix_fmt: yuv420p
+crf: 23
+gop: 30
+preset: veryfast
+workers: 0
+
+chunks_size: 1000
+data_files_size_in_mb: 100
+video_files_size_in_mb: 200

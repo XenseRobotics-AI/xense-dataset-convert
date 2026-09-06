@@ -13,6 +13,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from .imaging import validate_transforms
+
 VIDEO = "video"
 POSE = "pose"
 GRIPPER = "gripper"
@@ -38,16 +40,27 @@ class StreamRule:
         key: Stream key template, e.g. ``"{side}_wrist"``. For videos this
             becomes the feature ``observation.images.<key>``; for pose/gripper
             it prefixes the state field names.
+        transform: Frame transforms applied to this camera on the way out, in
+            order -- see :mod:`hdf52lerobot.imaging`. Videos only; a recorder
+            that wrote the sensor's own BGR portrait frames needs
+            ``[bgr_to_rgb, transpose]`` to match what the capture path
+            produces.
     """
 
     pattern: str
     kind: str
     key: str
+    transform: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
             raise ValueError(f"Unknown stream kind {self.kind!r}, expected one of {KINDS}")
         re.compile(self.pattern)
+        object.__setattr__(self, "transform", validate_transforms(self.transform))
+        if self.transform and self.kind != VIDEO:
+            raise ValueError(
+                f"transform is only meaningful for {VIDEO!r} streams, not {self.kind!r}"
+            )
 
     def match(self, filename: str) -> tuple[str, dict[str, str]] | None:
         """Return ``(resolved_key, named_groups)`` when the rule applies."""
@@ -99,7 +112,17 @@ class ConverterConfig:
     arrival timestamps jitter enough that a median-based estimate is unstable."""
 
     robot_type: str = "bi_rdt_gripper"
+
     task: str = "Converted from UMI HDF5 recording"
+    """Task text for every episode that ``tasks`` does not name."""
+
+    tasks: dict[str, str] = field(default_factory=dict)
+    """Per-episode task text, keyed by the recording directory's name.
+
+    A capture schedule usually gives each session its own task, so one string
+    for a whole dataset is the exception rather than the rule. Episodes not
+    listed here fall back to ``task``. ``--tasks FILE`` loads a mapping without
+    editing the profile."""
 
     quat_order: str = "xyzw"
     """Component order of the tracker's 4 rotation columns. The UMI rig writes
@@ -142,15 +165,39 @@ class ConverterConfig:
     streams: tuple[StreamRule, ...] = DEFAULT_STREAM_RULES
 
     vcodec: str = "libx264"
+    """Encoder. A software encoder (``libx264``, ``libx265``) takes its quality
+    from ``crf``; an NVENC encoder (``h264_nvenc``, ``hevc_nvenc``) is driven at
+    constant QP instead, and the options are shaped accordingly."""
+
     pix_fmt: str = "yuv420p"
+
     crf: int = 23
+    """The encoder's constant-quality number: CRF for the software encoders,
+    QP for NVENC. The scales differ -- on this corpus's tactile video, NVENC at
+    QP 21 matches libx264 at CRF 23 on PSNR -- so a profile that changes the
+    encoder changes this with it."""
+
+    video_options: dict[str, str] = field(default_factory=dict)
+    """Encoder options merged over the derived ones, for anything the fields
+    above do not name (``tune``, ``rc-lookahead``, ``spatial-aq``)."""
     gop: int = 30
     """Keyframe interval. Sources arrive with GOPs of 200+ frames, which makes
     LeRobot's random-access reads crawl; TacCap sits near 57."""
 
     preset: str = "veryfast"
     workers: int = 0
-    """Video encoder threads across camera keys; 0 selects half the CPUs."""
+    """Cameras encoded in parallel within one episode; 0 selects half the CPUs."""
+
+    codec_threads: int = 1
+    """Threads *inside* each encoder and decoder. 0 hands the choice to FFmpeg,
+    which sizes every instance to the whole machine.
+
+    One conversion runs an encoder and a decoder per camera at once, and a bulk
+    run puts several conversions on the same machine, so FFmpeg's default has
+    every one of those instances claiming all the cores: 5 jobs x 7 cameras was
+    measured at 1100 threads on 32 cores, a third of a million context switches
+    a second, and an episode taking 29.9 s that takes 19.4 s with this set to 1.
+    Parallelism belongs at the camera and job level, where it is counted."""
 
     chunks_size: int = 1000
     data_files_size_in_mb: int = 100
@@ -174,6 +221,8 @@ class ConverterConfig:
             raise ValueError("warn_sync_gap_frames must be positive")
         if self.gop <= 0:
             raise ValueError("gop must be positive")
+        if self.codec_threads < 0:
+            raise ValueError("codec_threads must be 0 (auto) or positive")
         self.state_layout = tuple(self.state_layout)
         self.streams = tuple(self.streams)
         if not self.state_layout:
@@ -190,6 +239,28 @@ class ConverterConfig:
     @property
     def warn_sync_gap_s(self) -> float:
         return self.warn_sync_gap_frames / self.fps
+
+    @property
+    def is_hardware_encoder(self) -> bool:
+        return "nvenc" in self.vcodec or "qsv" in self.vcodec or "vaapi" in self.vcodec
+
+    def encoder_options(self) -> dict[str, str]:
+        """Options for ``add_stream``, shaped for the encoder in use.
+
+        The software encoders take ``crf`` plus a minimum keyframe interval;
+        NVENC has neither and wants an explicit rate-control mode with a QP.
+        """
+        options = {"g": str(self.gop), "preset": self.preset}
+        if self.is_hardware_encoder:
+            options.update({"rc": "constqp", "qp": str(self.crf)})
+        else:
+            options.update({"crf": str(self.crf), "keyint_min": str(self.gop)})
+        options.update({key: str(value) for key, value in self.video_options.items()})
+        return options
+
+    def task_for(self, episode_name: str) -> str:
+        """The task text for one recording directory."""
+        return self.tasks.get(episode_name, self.task)
 
     def state_names(self, kinds: dict[str, str]) -> list[str]:
         """Build the ``observation.state`` field names from the layout.
@@ -223,11 +294,22 @@ class ConverterConfig:
         rules = raw.pop("streams", None)
         if rules is not None:
             raw["streams"] = tuple(
-                StreamRule(pattern=item["pattern"], kind=item["kind"], key=item["key"])
+                StreamRule(
+                    pattern=item["pattern"],
+                    kind=item["kind"],
+                    key=item["key"],
+                    transform=tuple(item.get("transform") or ()),
+                )
                 for item in rules
             )
         if "state_layout" in raw:
             raw["state_layout"] = tuple(raw["state_layout"])
+        if "video_options" in raw and raw["video_options"] is not None:
+            raw["video_options"] = {
+                str(key): str(value) for key, value in dict(raw["video_options"]).items()
+            }
+        if "tasks" in raw and raw["tasks"] is not None:
+            raw["tasks"] = {str(key): str(value) for key, value in dict(raw["tasks"]).items()}
         known = {f.name for f in cls.__dataclass_fields__.values()}
         extra = {key: value for key, value in raw.items() if key not in known}
         settings = {key: value for key, value in raw.items() if key in known}

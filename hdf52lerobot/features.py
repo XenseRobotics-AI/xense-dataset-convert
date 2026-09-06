@@ -14,7 +14,19 @@ from .source import SourceEpisode
 SCALAR_FEATURES = ("episode_index", "frame_index", "index", "task_index")
 SOURCE_TIMESTAMP = "observation.source_timestamp"
 
-CODEC_NAMES = {"libx264": "h264", "libx265": "hevc", "libsvtav1": "av1"}
+# What `meta/info.json` calls the codec: the container's name for the format,
+# not the encoder that produced it, so a dataset reads the same whether its
+# video came off the CPU or the GPU.
+CODEC_NAMES = {
+    "libx264": "h264",
+    "h264_nvenc": "h264",
+    "h264_qsv": "h264",
+    "h264_vaapi": "h264",
+    "libx265": "hevc",
+    "hevc_nvenc": "hevc",
+    "libsvtav1": "av1",
+    "av1_nvenc": "av1",
+}
 
 
 def video_info(width: int, height: int, config: ConverterConfig) -> dict[str, Any]:
@@ -52,11 +64,14 @@ def build_features(
         features[SOURCE_TIMESTAMP] = {"dtype": "int64", "names": None, "shape": [1]}
 
     for stream in episode.videos.values():
+        # The shape the dataset carries is the frame *after* the stream's
+        # transforms, which can swap width and height.
+        width, height = stream.output_size
         features[stream.feature] = {
             "dtype": "video",
-            "info": video_info(stream.width, stream.height, config),
+            "info": video_info(width, height, config),
             "names": ["height", "width", "channels"],
-            "shape": [int(stream.height), int(stream.width), 3],
+            "shape": [height, width, 3],
         }
 
     return {key: features[key] for key in sorted(features)}

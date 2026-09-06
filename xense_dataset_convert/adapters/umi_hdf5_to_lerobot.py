@@ -24,7 +24,9 @@ OVERRIDE_OPTIONS = frozenset(
         "gop",
         "preset",
         "workers",
+        "codec_threads",
         "keep_source_timestamp",
+        "tasks",
     }
 )
 ACCEPTED_OPTIONS = OVERRIDE_OPTIONS | {"config", "overwrite"}

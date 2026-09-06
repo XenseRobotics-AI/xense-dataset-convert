@@ -90,11 +90,23 @@ class Hdf5ToLeRobotConverter:
         output_root: str | Path,
         config: ConverterConfig | None = None,
         overwrite: bool = False,
+        skip_failed_episodes: bool = False,
     ):
+        """
+        Args:
+            skip_failed_episodes: Carry on when a recording cannot be read,
+                pairs badly, or does not match the others, instead of failing
+                the run. Only failures raised before anything is written can be
+                skipped, so a partly written episode still stops the run.
+                Skipped recordings are listed in ``meta/sources.json``. Worth
+                turning on for a bulk run over third-party recordings, where
+                one damaged directory should not cost a dataset of thousands.
+        """
         self.inputs = list(inputs)
         self.output_root = Path(output_root).expanduser().resolve()
         self.config = config or ConverterConfig()
         self.overwrite = overwrite
+        self.skip_failed_episodes = skip_failed_episodes
 
     def convert(self) -> Path:
         episode_paths = discover_episodes(self.inputs)
@@ -108,7 +120,8 @@ class Hdf5ToLeRobotConverter:
             shutil.rmtree(self.output_root)
         self.output_root.mkdir(parents=True)
 
-        first = read_episode(episode_paths[0], self.config)
+        skipped: list[dict[str, Any]] = []
+        first, first_position = self._first_readable(episode_paths, skipped)
         state_names = self.config.state_names(first.kinds)
         features = build_features(first, self.config, state_names)
         video_keys = video_features(features)
@@ -116,7 +129,12 @@ class Hdf5ToLeRobotConverter:
         writer = DatasetWriter(self.output_root, self.config, features, video_keys)
         aggregators = {
             stream.feature: VideoAggregator(
-                self.output_root, stream.feature, stream.width, stream.height, self.config
+                self.output_root,
+                stream.feature,
+                stream.width,
+                stream.height,
+                self.config,
+                stream.transform,
             )
             for stream in first.videos.values()
         }
@@ -130,20 +148,67 @@ class Hdf5ToLeRobotConverter:
         pool = ThreadPoolExecutor(max_workers=min(workers, len(first.videos) or 1))
         try:
             for position, path in enumerate(episode_paths):
-                episode = first if position == 0 else read_episode(path, self.config)
-                self._check_layout(episode, first, state_names)
-                sources.append(self._convert_episode(episode, writer, aggregators, accumulator, pool))
+                if position < first_position:
+                    continue  # already reported while looking for a reference
+                try:
+                    episode = first if position == first_position else read_episode(path, self.config)
+                    self._check_layout(episode, first, state_names)
+                    sync = build_sync(episode, self.config)
+                except Exception as error:
+                    if not self.skip_failed_episodes:
+                        raise
+                    # Nothing has been written for this episode yet, so dropping
+                    # it leaves the dataset consistent.
+                    logger.warn(f"{path.name}: skipped ({type(error).__name__}: {error})")
+                    skipped.append(self._skip_record(path, error))
+                    continue
+                sources.append(
+                    self._convert_episode(episode, sync, writer, aggregators, accumulator, pool)
+                )
         finally:
             pool.shutdown(wait=True)
             for aggregator in aggregators.values():
                 aggregator.close()
 
+        if not sources:
+            raise ValueError(f"No episode could be converted; {len(skipped)} were skipped")
         writer.finalize(accumulator.finalize())
-        self._write_sources(sources)
+        self._write_sources(sources, skipped)
+        if skipped:
+            logger.warn(f"Skipped {len(skipped)} unusable recording(s); see meta/sources.json")
         logger.info(f"Done: {self.output_root}")
         return self.output_root
 
-    def _write_sources(self, sources: list[dict[str, Any]]) -> None:
+    @staticmethod
+    def _skip_record(path: Path, error: Exception) -> dict[str, Any]:
+        return {
+            "source_dir": str(path),
+            "source_parent": path.parent.name,
+            "error": f"{type(error).__name__}: {error}",
+        }
+
+    def _first_readable(
+        self, episode_paths: list[Path], skipped: list[dict[str, Any]]
+    ) -> tuple[SourceEpisode, int]:
+        """The episode the dataset's features are built from.
+
+        Normally the first one. When skipping is on and it cannot be read, the
+        search moves down the list rather than failing: the reference only has
+        to be a valid recording, not the first one.
+        """
+        for position, path in enumerate(episode_paths):
+            try:
+                return read_episode(path, self.config), position
+            except Exception as error:
+                if not self.skip_failed_episodes:
+                    raise
+                logger.warn(f"{path.name}: skipped ({type(error).__name__}: {error})")
+                skipped.append(self._skip_record(path, error))
+        raise ValueError("No readable recording among the inputs")
+
+    def _write_sources(
+        self, sources: list[dict[str, Any]], skipped: list[dict[str, Any]] | None = None
+    ) -> None:
         """``meta/sources.json``: where every episode came from and how it was resampled.
 
         Not part of the LeRobot layout, which ignores extra files under meta/;
@@ -161,6 +226,7 @@ class Hdf5ToLeRobotConverter:
             "inputs": [str(Path(entry).expanduser().resolve()) for entry in self.inputs],
             "config": config,
             "episodes": sources,
+            "skipped": skipped or [],
         }
         path = self.output_root / "meta" / "sources.json"
         path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -188,13 +254,13 @@ class Hdf5ToLeRobotConverter:
     def _convert_episode(
         self,
         episode: SourceEpisode,
+        sync: SyncReport,
         writer: DatasetWriter,
         aggregators: dict[str, VideoAggregator],
         accumulator: StatsAccumulator,
         pool: ThreadPoolExecutor,
     ) -> dict[str, Any]:
         """Write one episode; returns its ``meta/sources.json`` entry."""
-        sync = build_sync(episode, self.config)
         logger.info(f"{episode.name}: {sync.length} frames @ {self.config.fps}fps")
         for line in sync.describe():
             logger.info(f"  {line}")
@@ -231,10 +297,11 @@ class Hdf5ToLeRobotConverter:
             )
             samples[feature] = result.samples
 
+        task = self.config.task_for(episode.name)
         record = writer.add_episode(
             states,
             actions,
-            self.config.task,
+            task,
             placements,
             source_timestamps=sync.tick_timestamps if self.config.keep_source_timestamp else None,
         )
@@ -248,18 +315,23 @@ class Hdf5ToLeRobotConverter:
             "frame_index": np.arange(length),
             "episode_index": np.full(length, record.episode_index),
             "index": np.arange(record.dataset_from_index, record.dataset_to_index),
-            "task_index": np.full(length, writer.task_index(self.config.task)),
+            "task_index": np.full(length, writer.task_index(task)),
         }
         if self.config.keep_source_timestamp:
             numeric[SOURCE_TIMESTAMP] = seconds_to_ns(sync.tick_timestamps)
         record.stats = accumulator.add_episode(numeric=numeric, images=samples)
 
         offsets_ms = np.abs(sync.warp_s) * 1000.0
+        worst_gap_ms = {
+            key: round(float(stream.gaps_s.max()) * 1000, 1)
+            for key, stream in sync.streams.items()
+        }
+        loose_frames = {key: stream.loose for key, stream in sync.streams.items() if stream.loose}
         return {
             "episode_index": record.episode_index,
             "source_dir": str(episode.path),
             "source_parent": episode.path.parent.name,
-            "task": self.config.task,
+            "task": task,
             "frames": length,
             "source_iterations": sync.source_length,
             "pair": sync.mode,
@@ -270,6 +342,11 @@ class Hdf5ToLeRobotConverter:
                 "p95": round(float(np.percentile(offsets_ms, 95)), 1),
                 "max": round(float(offsets_ms.max()), 1),
             },
+            # What a quality pass downstream filters on: how stale the worst
+            # frame of each stream is, and how many sat past the warn limit.
+            "worst_gap_ms": max(worst_gap_ms.values()),
+            "worst_gap_stream": max(worst_gap_ms, key=worst_gap_ms.get),
+            "loose_frames": loose_frames,
             "first_source_timestamp": float(sync.tick_timestamps[0]),
             "last_source_timestamp": float(sync.tick_timestamps[-1]),
             "files": sorted(stream.path.name for stream in episode.all_streams().values()),

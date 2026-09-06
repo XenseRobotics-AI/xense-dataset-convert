@@ -1,14 +1,28 @@
-# hdf52lerobot profile for the TacVerse-RDT recordings (/archive/TacVerse-RDT/<rig>/ep_*).
+# hdf52lerobot profile for the TacVerse-RDT recordings
+# (/archive/TacVerse-RDT-Raw/<rig>/ep_*), the RDT capture team's standard
+# format: one side-view camera, two wrist cameras, four tactile sensors, two
+# Vive trackers, two openv2 jaw encoders, and a 20-dim observation.state. The
+# rig has no head tracker, so nothing contributes a head pose and the third
+# camera is a fixed side view rather than a headset camera.
 #
-# Same rig layout as configs/hdf52lerobot.yaml: head + two wrist cameras, four
-# tactile sensors, two Vive trackers, two openv2 jaw encoders, and the same
-# 20-dim observation.state. What differs is the clock. The recorder's polling
+# Three things differ from what this converter's defaults assume.
+#
+# 1. The clock. The recorder's polling
 # loop targets 30 Hz but stalls often enough to average 20 to 24 Hz, with the
 # rate changing from one episode to the next, so its iterations cannot be the
 # dataset's time axis. `pair: grid` lays a uniform 20 Hz grid over each episode
 # and takes the nearest iteration for every tick (a tick inside a stall repeats
 # the previous iteration; iterations between ticks are dropped; both are
 # reported per stream and recorded in meta/sources.json).
+#
+# 2. Tactile colour. The Xense SDK hands out BGR; this recorder encoded those
+# bytes as if they were RGB, so the channels come back reversed. `bgr_to_rgb`
+# puts them back, which lines the frames up with every TacVerse dataset.
+#
+# 3. Tactile orientation. The capture path in xense-taccap-lerobot lays the
+# sensor's portrait frame down (cameras/xense/camera_xense.py transposes on
+# read), which is why TacVerse stores tactile as 400x700. This recorder wrote
+# the sensor's own 700x400, so `transpose` applies the same swap here.
 #
 #   hdf52lerobot --config configs/tacverse_rdt.yaml \
 #       --input /archive/TacVerse-RDT/035 --input /archive/TacVerse-RDT/036 \
@@ -26,10 +40,18 @@ pair: grid
 # axis is never lost.
 keep_source_timestamp: true
 
-# Per-stream distance between a frame's sample and its grid tick. Stalls up to
-# ~170 ms exist in these recordings; 3 frames (150 ms) is the reject limit and
-# anything past 2 frames is reported.
-max_sync_gap_frames: 3.0
+# Per-stream distance between a frame's sample and its grid tick, in frames.
+#
+# Measured over 256 recordings spread across all 32 stations, the worst gap in
+# an episode is 61 ms at the median and 77 ms at p90 -- but the tail runs to
+# 765 ms. Rejecting at 3 frames (150 ms) would throw away 2.7% of episodes over
+# a single stale tick in a session of thousands of them; 6 frames (300 ms)
+# rejects 0.4%, which is the tail of recordings with a real hole in them.
+#
+# So: reject a recording with a hole, keep the rest and report them. Every
+# episode's worst gap and its count of loose frames go to meta/sources.json,
+# which is what a quality pass downstream filters on.
+max_sync_gap_frames: 6.0
 warn_sync_gap_frames: 2.0
 
 master_clock: left_tcp
@@ -39,16 +61,26 @@ state_layout:
   - right_tcp
   - right_gripper
 
+# The codec suffix is part of every video pattern on purpose. A few recordings
+# kept an abandoned `_ffv1.mkv` encode beside the real `_libsvtav1.mkv` one;
+# both would match a looser rule and the two would fight over the same stream
+# key. Naming the codec takes the leftover out of the running, and it is then
+# reported as an unmatched file rather than silently chosen.
 streams:
-  - pattern: '^head_.*_mvs_mono_.*\.mkv$'
+  # Named `side`, not `head`: this camera watches the workspace from the side,
+  # and unlike a headset camera it has no pose stream to go with it.
+  - pattern: '^head_.*_mvs_mono_.*_libx264\.mkv$'
     kind: video
-    key: head
-  - pattern: '^(?P<side>left|right)_umi_.*_mvs_mono_.*\.mkv$'
+    key: side
+  - pattern: '^(?P<side>left|right)_umi_.*_mvs_mono_.*_libx264\.mkv$'
     kind: video
     key: '{side}_wrist'
-  - pattern: '^(?P<side>left|right)_umi_.*_tactile_(?P<pos>left|right)_.*\.mkv$'
+  - pattern: '^(?P<side>left|right)_umi_.*_tactile_(?P<pos>left|right)_.*_libsvtav1\.mkv$'
     kind: video
     key: '{side}_tactile_{pos}'
+    # BGR bytes written as RGB, and the sensor's portrait frame: put both back
+    # the way the capture path would have.
+    transform: [bgr_to_rgb, transpose]
   - pattern: '^(?P<side>left|right)_umi_.*_tracker_.*\.hdf5$'
     kind: pose
     key: '{side}_tcp'
@@ -56,14 +88,30 @@ streams:
     kind: gripper
     key: '{side}_gripper'
 
-# Sources are 480x480 h264 (head, wrists) and 400x700 AV1 (tactile); all are
-# re-encoded to CFR h264 at the declared fps.
-vcodec: libx264
+# Sources are 480x480 h264 (side, wrists) and 400x700 AV1 (tactile); all are
+# re-encoded to CFR h264 at the declared fps. After `transpose` the tactile
+# features are 700x400, matching TacVerse.
+#
+# Encoding runs on the GPU's NVENC engine. Encoding was two thirds of the CPU
+# work in this pipeline, and moving it off leaves the cores to decoding and the
+# tactile transform. `crf` is NVENC's constant QP here, not x264's CRF: at QP 21
+# a tactile stream came out at 41.85 dB PSNR against libx264 CRF 23's 41.75 dB,
+# in a slightly smaller file, at 3.1x the speed. `meta/info.json` still records
+# the codec as `h264`, so a reader cannot tell which engine produced it.
+vcodec: h264_nvenc
 pix_fmt: yuv420p
-crf: 23
+crf: 21
 gop: 30
-preset: veryfast
+preset: p4
+video_options:
+  tune: hq
 workers: 0
+
+# Threads inside each encoder and decoder. Left to FFmpeg every instance sizes
+# itself to the whole machine, and this corpus is converted several datasets at
+# a time with seven cameras each: 1100 threads on 32 cores, 390k context
+# switches a second, 29.9 s per episode against 19.4 s with this at 1.
+codec_threads: 1
 
 chunks_size: 1000
 data_files_size_in_mb: 100

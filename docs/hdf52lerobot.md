@@ -34,10 +34,15 @@ hdf52lerobot \
 Two 72-second episodes (11 streams each, 1.1 GB of source) convert in ~14 s and
 land at ~118 MB.
 
+`--task` sets one task for the whole dataset. When a capture schedule gives
+each session its own task, `--tasks FILE` takes a YAML/JSON map from recording
+directory name to task text instead, and `--task` becomes the fallback for
+anything the map does not name.
+
 Useful flags: `--config` (rule file, default
 [`configs/hdf52lerobot.yaml`](../configs/hdf52lerobot.yaml)), `--fps`,
 `--quat-order`, `--pair`, `--max-sync-gap-frames`, `--warn-sync-gap-frames`,
-`--crf`, `--gop`, `--preset`, `--workers`, `--overwrite`.
+`--crf`, `--gop`, `--preset`, `--workers`, `--codec-threads`, `--overwrite`.
 
 ## What it reads
 
@@ -55,7 +60,7 @@ Useful flags: `--config` (rule file, default
 ```
 <output>/
 ├── meta/
-│   ├── info.json                          # fps, robot_type, features
+│   ├── info.json                          # totals first, then features
 │   ├── stats.json                         # min/max/mean/std/count per feature
 │   ├── tasks.parquet
 │   └── episodes/chunk-000/file-000.parquet  # per-episode ranges + stats/* blocks
@@ -102,6 +107,27 @@ Useful flags: `--config` (rule file, default
   the declared fps with a short GOP — the sources carry 200+ frame GOPs, which
   makes LeRobot's random-access reads crawl, and LeRobot's default
   `tolerance_s = 1e-4` requires frame *i* to sit exactly at *i/fps*.
+- **Encoder**: `vcodec` picks it, and the options are shaped to suit — the
+  software encoders take `crf` plus a keyframe floor, NVENC takes a
+  rate-control mode and a QP. `crf` is the constant-quality number for
+  whichever is in use, and the scales differ: on this corpus's tactile video,
+  `h264_nvenc` at QP 21 matched `libx264` at CRF 23 on PSNR (41.85 dB against
+  41.75 dB) in a slightly smaller file at 3.1x the speed. `meta/info.json`
+  records the format (`h264`), never the encoder, so a dataset reads the same
+  either way.
+- **Threads**: `--workers` sets how many cameras of one episode are encoded at
+  once; `--codec-threads` (default 1) sets how many threads run *inside* each
+  encoder and decoder. Left to FFmpeg (`0`), every instance sizes itself to the
+  whole machine, so a bulk run converting several datasets at once ends up many
+  times oversubscribed — measured at 1100 threads on 32 cores, 390k context
+  switches a second, and an episode taking 29.9 s against 19.4 s at `1`.
+- **Frame transforms**: a `video` rule can carry `transform:`, applied per camera
+  before encoding, so the mp4, the feature shape and the statistics all describe
+  the same picture. `bgr_to_rgb` reverses the channels; `transpose` swaps height
+  and width. Both mirror what the capture path in `xense-taccap-lerobot` does to
+  a Xense tactile frame (`cameras/xense/camera_xense.py`), which is why every
+  TacVerse dataset stores tactile as 400×700 RGB. A recorder that wrote the
+  sensor's own BGR portrait frames needs `transform: [bgr_to_rgb, transpose]`.
 
 ## Caveats
 
@@ -116,13 +142,32 @@ Useful flags: `--config` (rule file, default
 ## Profiles
 
 [`configs/tacverse_rdt.yaml`](../configs/tacverse_rdt.yaml) is the profile for
-the TacVerse-RDT recordings: same rig layout, `pair: grid` at 20 Hz because that
-recorder's loop stalls, and `keep_source_timestamp: true`.
+the TacVerse-RDT recordings, the RDT capture team's standard format: a
+side-view camera (no head pose), two wrist cameras, four tactile sensors and
+the same 20-dim state. It sets `pair: grid` at 20 Hz because that recorder's
+loop stalls, `keep_source_timestamp: true`, and
+`transform: [bgr_to_rgb, transpose]` on the tactile cameras, which the recorder
+wrote in the sensor's own colour order and orientation.
+
+Those recordings carry no task text: what identifies a session's task is when
+it was recorded, through the capture team's schedule
+(`采集任务时间安排表.xlsx`, a task code per half-day plus a sheet spelling the
+codes out). [`tools/rdt_task_map.py`](../tools/rdt_task_map.py) turns that into
+a per-episode map, which `--tasks` then applies. Rigs are converted separately,
+one dataset per machine number:
 
 ```bash
-hdf52lerobot --config configs/tacverse_rdt.yaml \
-  --input /archive/TacVerse-RDT/035 --input /archive/TacVerse-RDT/036 \
-  --output /archive/TacVerse/<name> --task "<task text>"
+python tools/rdt_task_map.py \
+  --schedule ~/Documents/TacVerse-RDT-Rules/采集任务时间安排表.xlsx \
+  --input /archive/TacVerse-RDT-Raw/035 --input /archive/TacVerse-RDT-Raw/036 \
+  --output configs/tacverse_rdt_tasks.yaml
+
+for rig in 035 036; do
+  hdf52lerobot --config configs/tacverse_rdt.yaml \
+    --tasks configs/tacverse_rdt_tasks.yaml \
+    --input /archive/TacVerse-RDT-Raw/$rig \
+    --output /archive/lerobot/TacVerse/TacVerse-RDT-$rig
+done
 ```
 
 ## Extending it (new cameras, head pose)

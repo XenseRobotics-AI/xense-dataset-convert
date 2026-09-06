@@ -90,17 +90,14 @@ def reduce_numeric(rows: np.ndarray) -> dict[str, Any]:
     }
 
 
-def reduce_images(frames_chw: list[np.ndarray]) -> dict[str, Any]:
-    """Per-channel min/max/mean/std over prepared frames, each of shape (3,1,1)."""
-    per_channel = [frame.reshape(3, -1).astype(np.float64) / 255.0 for frame in frames_chw]
-    flat = np.concatenate(per_channel, axis=1)
-    return {
-        "min": _to_list(flat.min(axis=1)[:, None, None]),
-        "max": _to_list(flat.max(axis=1)[:, None, None]),
-        "mean": _to_list(flat.mean(axis=1)[:, None, None]),
-        "std": _to_list(flat.std(axis=1)[:, None, None]),
-        "count": [len(frames_chw)],
-    }
+# Frames reduced in one go. Enough to make the reduction wide, small enough
+# that a batch of 400x700 samples stays well inside a job's memory.
+_STATS_BATCH = 64
+
+
+def _batched(items: list[np.ndarray], size: int):
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 class _ImageMoments:
@@ -120,14 +117,18 @@ class _ImageMoments:
         self.frames = 0
 
     def add(self, frames_chw: list[np.ndarray]) -> None:
-        for frame in frames_chw:
-            flat = frame.reshape(3, -1).astype(np.float64) / 255.0
-            self.total += flat.sum(axis=1)
-            self.total_sq += np.square(flat).sum(axis=1)
-            self.minimum = np.minimum(self.minimum, flat.min(axis=1))
-            self.maximum = np.maximum(self.maximum, flat.max(axis=1))
-            self.pixels += flat.shape[1]
-            self.frames += 1
+        for batch in _batched(frames_chw, _STATS_BATCH):
+            # One reduction over a stack of frames rather than five per frame:
+            # a camera contributes ~170 samples an episode, and this runs on
+            # the main thread while the cameras encode on the pool.
+            flat = np.stack([frame.reshape(3, -1) for frame in batch]).astype(np.float64)
+            flat /= 255.0
+            self.total += flat.sum(axis=(0, 2))
+            self.total_sq += np.square(flat).sum(axis=(0, 2))
+            self.minimum = np.minimum(self.minimum, flat.min(axis=(0, 2)))
+            self.maximum = np.maximum(self.maximum, flat.max(axis=(0, 2)))
+            self.pixels += flat.shape[0] * flat.shape[2]
+            self.frames += len(batch)
 
     def reduce(self) -> dict[str, Any]:
         mean = self.total / self.pixels
@@ -139,6 +140,13 @@ class _ImageMoments:
             "std": _to_list(np.sqrt(variance)[:, None, None]),
             "count": [self.frames],
         }
+
+
+def reduce_images(frames_chw: list[np.ndarray]) -> dict[str, Any]:
+    """Per-channel min/max/mean/std over prepared frames, each of shape (3,1,1)."""
+    moments = _ImageMoments()
+    moments.add(frames_chw)
+    return moments.reduce()
 
 
 class StatsAccumulator:

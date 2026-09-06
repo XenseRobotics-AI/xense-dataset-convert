@@ -15,11 +15,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hdf52lerobot.config import ConverterConfig  # noqa: E402
+from dataclasses import replace  # noqa: E402
+
+from hdf52lerobot.config import ConverterConfig, StreamRule  # noqa: E402
 from hdf52lerobot.converter import (  # noqa: E402
     Hdf5ToLeRobotConverter,
     build_action,
     discover_episodes,
+)
+from hdf52lerobot.imaging import (  # noqa: E402
+    bgr_to_rgb,
+    compose,
+    transpose,
+    transformed_size,
+    validate_transforms,
 )
 from hdf52lerobot.geometry import (  # noqa: E402
     quaternions_to_rotation_6d,
@@ -139,6 +148,48 @@ def test_rotation_6d_is_two_orthonormal_columns():
 def test_quaternion_order_swap():
     assert np.allclose(to_wxyz(np.array([[1.0, 2.0, 3.0, 4.0]]), "xyzw"), [[4.0, 1.0, 2.0, 3.0]])
     assert np.allclose(to_wxyz(np.array([[1.0, 2.0, 3.0, 4.0]]), "wxyz"), [[1.0, 2.0, 3.0, 4.0]])
+
+
+# -- frame transforms --------------------------------------------------------
+
+
+def test_bgr_to_rgb_and_transpose_match_the_capture_path():
+    """Same two steps `xense-taccap-lerobot` applies to a tactile frame."""
+    frame = np.zeros((7, 4, 3), dtype=np.uint8)
+    frame[0, 0] = (10, 20, 30)  # BGR as the SDK hands it over
+    frame[6, 3] = (40, 50, 60)
+
+    swapped = compose(["bgr_to_rgb"])(frame)
+    assert swapped[0, 0].tolist() == [30, 20, 10]
+    assert swapped.shape == frame.shape
+
+    laid_down = compose(["transpose"])(frame)
+    assert laid_down.shape == (4, 7, 3)
+    assert laid_down[0, 0].tolist() == [10, 20, 30]
+    assert laid_down[3, 6].tolist() == [40, 50, 60]  # the corner moved with it
+
+    both = compose(["bgr_to_rgb", "transpose"])(frame)
+    assert both.shape == (4, 7, 3)
+    assert both[0, 0].tolist() == [30, 20, 10]
+    assert both.flags["C_CONTIGUOUS"]
+    # Composing must give exactly what applying the steps one at a time gives,
+    # even though it copies once instead of per step.
+    assert np.array_equal(both, transpose(bgr_to_rgb(frame)))
+
+
+def test_transformed_size_swaps_only_for_transpose():
+    assert transformed_size(400, 700, []) == (400, 700)
+    assert transformed_size(400, 700, ["bgr_to_rgb"]) == (400, 700)
+    assert transformed_size(400, 700, ["bgr_to_rgb", "transpose"]) == (700, 400)
+
+
+def test_unknown_transform_is_rejected():
+    with pytest.raises(ValueError, match="Unknown frame transform"):
+        validate_transforms(["rotate90"])
+    with pytest.raises(ValueError, match="Unknown frame transform"):
+        ConverterConfig(streams=(StreamRule(r"^x\.mkv$", "video", "x", ("flip",)),))
+    with pytest.raises(ValueError, match="only meaningful for 'video'"):
+        StreamRule(r"^x\.hdf5$", "pose", "x", ("transpose",))
 
 
 # -- source / sync -----------------------------------------------------------
@@ -261,19 +312,32 @@ def test_action_is_the_next_state():
     assert np.array_equal(actions[-1], states[-1])
 
 
-def test_image_stats_from_running_moments_match_a_direct_reduction():
+def test_image_stats_match_a_plain_numpy_reduction():
+    """Running moments over batches must equal reducing every pixel at once."""
     from hdf52lerobot.stats import _prepare_image, reduce_images
 
     rng = np.random.default_rng(1)
-    frames = [rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8) for _ in range(9)]
+    # More frames than one batch, so the batching itself is exercised.
+    frames = [rng.integers(0, 256, size=(48, 64, 3), dtype=np.uint8) for _ in range(150)]
+    prepared = [_prepare_image(frame) for frame in frames]
+    pixels = np.concatenate([frame.reshape(3, -1) for frame in prepared], axis=1) / 255.0
+    expected = {
+        "min": pixels.min(axis=1),
+        "max": pixels.max(axis=1),
+        "mean": pixels.mean(axis=1),
+        "std": pixels.std(axis=1),
+    }
+
     accumulator = StatsAccumulator()
-    accumulator.add_episode({}, {"cam": frames[:4]})
-    accumulator.add_episode({}, {"cam": frames[4:]})
+    accumulator.add_episode({}, {"cam": frames[:70]})
+    accumulator.add_episode({}, {"cam": frames[70:]})
     streamed = accumulator.finalize()["cam"]
-    direct = reduce_images([_prepare_image(frame) for frame in frames])
-    for stat in ("min", "max", "mean", "std"):
-        assert np.allclose(streamed[stat], direct[stat], atol=1e-9), stat
-    assert streamed["count"] == direct["count"] == [9]
+    direct = reduce_images(prepared)
+
+    for stat, want in expected.items():
+        assert np.allclose(np.array(streamed[stat]).ravel(), want, atol=1e-12), stat
+        assert np.allclose(np.array(direct[stat]).ravel(), want, atol=1e-12), stat
+    assert streamed["count"] == direct["count"] == [150]
 
 
 def test_downsample_hwc_returns_a_contiguous_copy_at_lerobot_size():
@@ -309,6 +373,26 @@ def test_dataset_tree(dataset: Path):
         assert (
             dataset / "videos" / f"observation.images.{key}" / "chunk-000" / "file-000.mp4"
         ).is_file()
+
+
+def test_info_key_order_matches_tacverse(dataset: Path):
+    """`features` is hundreds of lines; the totals a reader wants come first."""
+    info = json.loads((dataset / "meta" / "info.json").read_text())
+    assert list(info) == [
+        "codebase_version",
+        "robot_type",
+        "total_episodes",
+        "total_frames",
+        "total_tasks",
+        "chunks_size",
+        "data_files_size_in_mb",
+        "video_files_size_in_mb",
+        "fps",
+        "splits",
+        "data_path",
+        "video_path",
+        "features",
+    ]
 
 
 def test_info_matches_the_taccap_layout(dataset: Path):
@@ -442,8 +526,181 @@ def test_tacverse_config_loads():
         Path(__file__).resolve().parent.parent / "configs" / "tacverse_rdt.yaml"
     )
     assert (config.fps, config.pair, config.keep_source_timestamp) == (20, "grid", True)
+    # Encoding runs on the GPU; the dataset still records plain h264.
+    assert config.vcodec == "h264_nvenc" and config.codec_threads == 1
+    assert config.encoder_options()["rc"] == "constqp"
     assert config.robot_type == "bi_rdt_gripper"
+    # The third camera is a side view without a pose, and the tactile streams
+    # carry the two transforms the capture path would have applied.
+    by_key = {rule.key: rule for rule in config.streams}
+    assert "head" not in by_key
+    assert by_key["side"].kind == "video" and by_key["side"].transform == ()
+    assert by_key["{side}_tactile_{pos}"].transform == ("bgr_to_rgb", "transpose")
     assert len(config.state_names({"left_tcp": "pose", "left_gripper": "gripper", "right_tcp": "pose", "right_gripper": "gripper"})) == 20
+
+
+def test_transformed_camera_is_written_rotated_and_recoloured(recording: Path, tmp_path: Path):
+    """A camera with `transform` lands in the dataset the other way round."""
+    import av
+
+    base = ConverterConfig.from_yaml(
+        Path(__file__).resolve().parent.parent / "configs" / "hdf52lerobot.yaml"
+    )
+    base = replace(base, fps=FPS, gop=4, preset="ultrafast", task="t")
+    with_transform = replace(
+        base,
+        streams=tuple(
+            replace(rule, transform=("bgr_to_rgb", "transpose"))
+            if "tactile" in rule.key
+            else rule
+            for rule in base.streams
+        ),
+    )
+
+    def first_frame(root: Path, key: str) -> np.ndarray:
+        path = root / "videos" / f"observation.images.{key}" / "chunk-000" / "file-000.mp4"
+        with av.open(str(path)) as container:
+            return next(container.decode(video=0)).to_ndarray(format="rgb24")
+
+    plain = Hdf5ToLeRobotConverter([recording], tmp_path / "plain", base).convert()
+    turned = Hdf5ToLeRobotConverter(
+        [recording], tmp_path / "turned", with_transform
+    ).convert()
+
+    info = json.loads((turned / "meta" / "info.json").read_text())
+    # Sources are WIDTH x HEIGHT; only the transposed cameras come out swapped.
+    assert info["features"]["observation.images.head"]["shape"] == [HEIGHT, WIDTH, 3]
+    tactile = info["features"]["observation.images.left_tactile_left"]
+    assert tactile["shape"] == [WIDTH, HEIGHT, 3]
+    assert (tactile["info"]["video.width"], tactile["info"]["video.height"]) == (HEIGHT, WIDTH)
+
+    original = first_frame(plain, "left_tactile_left")
+    transformed = first_frame(turned, "left_tactile_left")
+    assert original.shape == (HEIGHT, WIDTH, 3)
+    assert transformed.shape == (WIDTH, HEIGHT, 3)
+    # A transpose leaves the per-channel means alone, so what is left to compare
+    # is the channel order: it is reversed.
+    assert np.allclose(
+        [transformed[..., channel].mean() for channel in range(3)],
+        [original[..., 2 - channel].mean() for channel in range(3)],
+        atol=2.0,
+    )
+    # An untransformed camera in the same run is untouched.
+    assert first_frame(turned, "head").shape == (HEIGHT, WIDTH, 3)
+
+    stats = json.loads((turned / "meta" / "stats.json").read_text())
+    assert np.array(stats["observation.images.left_tactile_left"]["mean"]).shape == (3, 1, 1)
+
+
+def test_per_episode_tasks_land_in_the_dataset(recording: Path, tmp_path: Path):
+    """A capture schedule gives each session its own task; one string per dataset
+    is the exception."""
+    import pyarrow.parquet as pq
+
+    config = ConverterConfig(
+        fps=FPS,
+        gop=4,
+        preset="ultrafast",
+        task="fallback",
+        tasks={"ep_0002": "wipe the plate"},
+    )
+    assert config.task_for("ep_0002") == "wipe the plate"
+    assert config.task_for("ep_0001") == "fallback"
+
+    output = Hdf5ToLeRobotConverter([recording], tmp_path / "tasks", config).convert()
+
+    info = json.loads((output / "meta" / "info.json").read_text())
+    assert info["total_tasks"] == 2
+    tasks = pq.read_table(output / "meta" / "tasks.parquet").to_pandas()
+    assert sorted(tasks.index.tolist()) == ["fallback", "wipe the plate"]
+
+    episodes = pq.read_table(
+        output / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
+    ).to_pandas()
+    assert [list(row) for row in episodes["tasks"]] == [["fallback"], ["wipe the plate"]]
+
+    frame = pq.read_table(output / "data" / "chunk-000" / "file-000.parquet").to_pandas()
+    index_of = {task: int(idx) for task, idx in tasks["task_index"].items()}
+    assert frame["task_index"][:FRAMES].tolist() == [index_of["fallback"]] * FRAMES
+    assert frame["task_index"][FRAMES:].tolist() == [index_of["wipe the plate"]] * FRAMES
+
+    sources = json.loads((output / "meta" / "sources.json").read_text())
+    assert [entry["task"] for entry in sources["episodes"]] == [
+        "fallback",
+        "wipe the plate",
+    ]
+
+
+def test_task_map_file_is_read_by_the_cli(tmp_path: Path):
+    from hdf52lerobot.cli import load_task_map
+
+    path = tmp_path / "tasks.yaml"
+    path.write_text('ep_0001: "pick up the cup"\nep_0002: "fold the towel"\n', encoding="utf-8")
+    assert load_task_map(path) == {"ep_0001": "pick up the cup", "ep_0002": "fold the towel"}
+    (tmp_path / "empty.yaml").write_text("", encoding="utf-8")
+    assert load_task_map(tmp_path / "empty.yaml") == {}
+    (tmp_path / "list.yaml").write_text("- not a mapping\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="expected a mapping"):
+        load_task_map(tmp_path / "list.yaml")
+
+
+def test_codec_threads_reach_the_encoder(tmp_path: Path):
+    """FFmpeg's default sizes every codec instance to the whole machine; this
+    setting is what keeps a parallel run from oversubscribing it."""
+    from hdf52lerobot.video import VideoAggregator
+
+    config = ConverterConfig(fps=FPS, gop=4, preset="ultrafast", codec_threads=1)
+    aggregator = VideoAggregator(tmp_path, "observation.images.cam", WIDTH, HEIGHT, config)
+    aggregator._open()
+    try:
+        assert aggregator._stream.codec_context.thread_count == 1
+        assert str(aggregator._stream.codec_context.thread_type) in ("NONE", "ThreadType.NONE", "0")
+    finally:
+        aggregator.close()
+
+    # 0 keeps FFmpeg's own choice, for a machine running one conversion.
+    auto = VideoAggregator(
+        tmp_path / "auto", "observation.images.cam", WIDTH, HEIGHT,
+        replace(config, codec_threads=0),
+    )
+    auto._open()
+    try:
+        assert auto._stream.codec_context.thread_count != 1
+    finally:
+        auto.close()
+
+    with pytest.raises(ValueError, match="codec_threads"):
+        ConverterConfig(codec_threads=-1)
+
+
+def test_encoder_options_follow_the_encoder():
+    """x264 takes CRF and a keyframe floor; NVENC takes a rate-control mode and
+    a QP, and rejects the other two."""
+    software = ConverterConfig(vcodec="libx264", crf=23, gop=30, preset="veryfast")
+    assert software.encoder_options() == {
+        "g": "30", "preset": "veryfast", "crf": "23", "keyint_min": "30",
+    }
+    assert software.is_hardware_encoder is False
+
+    hardware = ConverterConfig(
+        vcodec="h264_nvenc", crf=21, gop=30, preset="p4", video_options={"tune": "hq"}
+    )
+    assert hardware.is_hardware_encoder is True
+    assert hardware.encoder_options() == {
+        "g": "30", "preset": "p4", "rc": "constqp", "qp": "21", "tune": "hq",
+    }
+    # video_options has the last word, so a profile can override a derived one.
+    assert ConverterConfig(video_options={"crf": "18"}).encoder_options()["crf"] == "18"
+
+
+def test_info_records_the_format_not_the_encoder():
+    """A dataset reads the same whether its video came off the CPU or the GPU."""
+    from hdf52lerobot.features import video_info
+
+    for vcodec in ("libx264", "h264_nvenc", "h264_qsv"):
+        config = ConverterConfig(vcodec=vcodec)
+        assert video_info(640, 480, config)["video.codec"] == "h264"
+    assert video_info(640, 480, ConverterConfig(vcodec="hevc_nvenc"))["video.codec"] == "hevc"
 
 
 def test_shipped_config_loads():

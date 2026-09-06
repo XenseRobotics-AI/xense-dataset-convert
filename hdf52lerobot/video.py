@@ -9,6 +9,11 @@ its default ``tolerance_s`` is 1e-4 s, so a frame must sit exactly on i/fps.
 
 Each camera key writes one growing mp4 per (chunk, file); episodes are appended
 back to back and located later through ``from_timestamp``/``to_timestamp``.
+
+A camera can also carry frame transforms (see :mod:`hdf52lerobot.imaging`) for
+a recorder that wrote frames in the sensor's own colour order or orientation;
+those run before the encode, so the mp4, the feature shape and the statistics
+all describe the same picture.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from typing import Callable, Iterable
 import numpy as np
 
 from .config import ConverterConfig
+from .imaging import compose, transformed_size
 from .logger import get_logger
 
 logger = get_logger("hdf52lerobot.video")
@@ -49,12 +55,26 @@ class VideoAggregator:
         width: int,
         height: int,
         config: ConverterConfig,
+        transform: tuple[str, ...] = (),
     ):
+        """
+        Args:
+            width: Source frame width, as decoded.
+            height: Source frame height, as decoded.
+            transform: Frame transforms applied before encoding. The encoder is
+                sized from the result, so a transform that swaps the axes gives
+                an mp4 the other way round from its source.
+        """
         self.root = Path(root)
         self.feature = feature
         self.width = int(width)
         self.height = int(height)
         self.config = config
+        self.transform = tuple(transform)
+        self._apply = compose(self.transform)
+        self.output_width, self.output_height = transformed_size(
+            self.width, self.height, self.transform
+        )
 
         self._container = None
         self._stream = None
@@ -86,18 +106,21 @@ class VideoAggregator:
         path = self.current_path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._container = av.open(str(path), "w")
-        options = {
-            "crf": str(self.config.crf),
-            "g": str(self.config.gop),
-            "keyint_min": str(self.config.gop),
-            "preset": self.config.preset,
-        }
         self._stream = self._container.add_stream(
-            self.config.vcodec, self.config.fps, options=options
+            self.config.vcodec, self.config.fps, options=self.config.encoder_options()
         )
+        # A hardware encoder does its work on the GPU's own engine, so the
+        # thread count below governs only the frames handed to it.
+        if self.config.codec_threads:
+            # Left to FFmpeg, every encoder sizes itself to the whole machine,
+            # and a run with several cameras and several jobs then oversubscribes
+            # it many times over. See ConverterConfig.codec_threads.
+            self._stream.codec_context.thread_count = self.config.codec_threads
+            if self.config.codec_threads == 1:
+                self._stream.codec_context.thread_type = "NONE"
         self._stream.pix_fmt = self.config.pix_fmt
-        self._stream.width = self.width
-        self._stream.height = self.height
+        self._stream.width = self.output_width
+        self._stream.height = self.output_height
 
     def _close_current(self) -> None:
         if self._container is None:
@@ -167,6 +190,8 @@ class VideoAggregator:
         first_frame = self._frames_in_file
 
         with av.open(str(source_path)) as container:
+            if self.config.codec_threads:
+                container.streams.video[0].thread_count = self.config.codec_threads
             decoded = container.decode(video=0)
             source_position = -1
             current = None
@@ -186,11 +211,24 @@ class VideoAggregator:
                         f"{source_path.name}: frame size changed to "
                         f"{current.width}x{current.height}, expected {self.width}x{self.height}"
                     )
-                if output_position in wanted:
-                    sample = current.to_ndarray(format="rgb24")
-                    samples[output_position] = sample_transform(sample) if sample_transform else sample
-
-                frame = current.reformat(format=self.config.pix_fmt)
+                if self._apply is None:
+                    frame = current.reformat(format=self.config.pix_fmt)
+                    if output_position in wanted:
+                        sample = current.to_ndarray(format="rgb24")
+                        samples[output_position] = (
+                            sample_transform(sample) if sample_transform else sample
+                        )
+                else:
+                    # One decode, one transform: the encoder and the statistics
+                    # both take the transformed frame, so they cannot disagree.
+                    image = self._apply(current.to_ndarray(format="rgb24"))
+                    if output_position in wanted:
+                        samples[output_position] = (
+                            sample_transform(image) if sample_transform else image
+                        )
+                    frame = av.VideoFrame.from_ndarray(image, format="rgb24").reformat(
+                        format=self.config.pix_fmt
+                    )
                 # Explicit CFR timing: the source pts are the recorder's jittery
                 # arrival times, and LeRobot needs frame i to sit exactly at i/fps.
                 frame.pts = self._frames_in_file

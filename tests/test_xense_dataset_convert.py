@@ -57,6 +57,7 @@ def test_available_lists_every_pair():
         (Format.LEROBOT, Format.ZARR),
         (Format.MCAP, Format.LEROBOT),
         (Format.UMI_HDF5, Format.LEROBOT),
+        (Format.RLDS, Format.LEROBOT),
     }
 
 

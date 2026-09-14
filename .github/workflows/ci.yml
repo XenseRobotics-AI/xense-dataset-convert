@@ -34,7 +34,8 @@ jobs:
       - name: Syntax check
         run: >
           python -m compileall -q
-          lerobot2mcap lerobot2zarr mcap2lerobot hdf52lerobot tests
+          lerobot2mcap lerobot2zarr mcap2lerobot hdf52lerobot rlds2lerobot
+          xense_dataset_convert tools tests
 
   test:
     runs-on: ubuntu-latest

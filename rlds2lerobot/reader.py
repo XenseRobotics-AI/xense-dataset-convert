@@ -34,8 +34,16 @@ def iter_episodes(root: str | Path, split: str = "train") -> Iterator[dict[str, 
 
 
 def episode_count(root: str | Path, split: str = "train") -> int | None:
-    """Return the split size from TFDS metadata without reading TFRecords."""
-    info = json.loads((Path(root).expanduser() / "dataset_info.json").read_text())
+    """Return the split size from TFDS metadata without reading TFRecords.
+
+    ``None`` when the metadata cannot be read: the count only labels a progress
+    bar, and a caller reading episodes from somewhere other than a TFDS
+    directory -- a test, a generator -- still has a conversion to run.
+    """
+    try:
+        info = json.loads((Path(root).expanduser() / "dataset_info.json").read_text())
+    except (OSError, ValueError):
+        return None
     for entry in info.get("splits", []):
         if entry.get("name") == split and entry.get("shardLengths") is not None:
             return sum(int(length) for length in entry["shardLengths"])

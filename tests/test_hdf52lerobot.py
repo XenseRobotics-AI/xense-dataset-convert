@@ -825,6 +825,20 @@ def test_rgb_reference_brings_a_camera_to_the_reference_tone(recording: Path, tm
         channel_means(plain, "left_wrist"), channel_means(fixed, "left_wrist"), atol=1.0
     )
 
+    # With a channel-swapping transform, the tone must be measured *after* it,
+    # or the reference's red would be matched against the frame's blue.
+    swapped = replace(
+        toned,
+        streams=tuple(
+            replace(rule, transform=("bgr_to_rgb",), rgb_reference="TEST")
+            if rule.key == "head"
+            else rule
+            for rule in base.streams
+        ),
+    )
+    out = Hdf5ToLeRobotConverter([recording], tmp_path / "swapped", swapped).convert()
+    assert np.abs(channel_means(out, "head", 10) - 128.0).max() < 3.0
+
 
 def test_rgb_reference_must_name_a_known_entry():
     rule = StreamRule(r"^x\.mkv$", "video", "x")

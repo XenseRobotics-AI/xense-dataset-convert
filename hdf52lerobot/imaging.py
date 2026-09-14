@@ -79,17 +79,33 @@ def validate_transforms(names: Iterable[str]) -> tuple[str, ...]:
     return resolved
 
 
-def compose(names: Sequence[str]) -> Callable[[np.ndarray], np.ndarray] | None:
-    """One callable applying ``names`` in order, or None when there are none."""
+def compose(
+    names: Sequence[str], lookup: np.ndarray | None = None
+) -> Callable[[np.ndarray], np.ndarray] | None:
+    """One callable applying ``names`` in order, or None when there is no work.
+
+    Args:
+        names: Transform names, applied in order.
+        lookup: Optional :func:`bias_lookup` table, folded into the same pass.
+
+    Copying is what costs. The steps compose as views, and the result is
+    materialised exactly once -- through the lookup table when there is one,
+    which is otherwise a second full pass over every pixel.
+    """
     steps = [_STEPS[name] for name in validate_transforms(names)]
-    if not steps:
+    if not steps and lookup is None:
         return None
 
-    def apply(frame: np.ndarray) -> np.ndarray:
+    def view(frame: np.ndarray) -> np.ndarray:
         for step in steps:
             frame = step(frame)
-        # One pass over the pixels, whatever the steps were.
-        return np.ascontiguousarray(frame)
+        return frame
+
+    if lookup is None:
+        return lambda frame: np.ascontiguousarray(view(frame))
+
+    def apply(frame: np.ndarray) -> np.ndarray:
+        return apply_bias(view(frame), lookup)
 
     return apply
 
@@ -128,10 +144,14 @@ def bias_lookup(bias: np.ndarray) -> np.ndarray:
 
 
 def apply_bias(frame: np.ndarray, lookup: np.ndarray) -> np.ndarray:
-    """Apply a :func:`bias_lookup` table to an ``(..., 3)`` uint8 frame."""
+    """Apply a :func:`bias_lookup` table to an ``(..., 3)`` uint8 frame.
+
+    Reads through whatever strides ``frame`` has and writes a contiguous
+    result, so a transformed view can be materialised and shifted in one pass.
+    """
     if frame.ndim < 3 or frame.shape[-1] != 3:
         raise ValueError(f"apply_bias expects a 3-channel frame, got shape {frame.shape}")
-    out = np.empty_like(frame)
+    out = np.empty(frame.shape, dtype=np.uint8)
     for channel in range(3):
         np.take(lookup[channel], frame[..., channel], out=out[..., channel])
     return out

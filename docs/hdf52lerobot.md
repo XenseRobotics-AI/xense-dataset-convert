@@ -115,6 +115,11 @@ Useful flags: `--config` (rule file, default
   41.75 dB) in a slightly smaller file at 3.1x the speed. `meta/info.json`
   records the format (`h264`), never the encoder, so a dataset reads the same
   either way.
+- **Tone**: a `video` rule naming an `rgb_reference` has its frames shifted so
+  the camera's channel means land on that reference, which is what the Xense
+  SDK does at sensor init from 2.1.x (`init_rgb_bias`). The shift is measured
+  from each recording's opening `rgb_bias_frames` frames — the gel at rest —
+  and folded into the same pass as the transforms.
 - **Threads**: `--workers` sets how many cameras of one episode are encoded at
   once; `--codec-threads` (default 1) sets how many threads run *inside* each
   encoder and decoder. Left to FFmpeg (`0`), every instance sizes itself to the

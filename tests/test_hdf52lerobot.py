@@ -703,6 +703,153 @@ def test_info_records_the_format_not_the_encoder():
     assert video_info(640, 480, ConverterConfig(vcodec="hevc_nvenc"))["video.codec"] == "hevc"
 
 
+def test_gripper_angle_wraps_to_the_calibrated_span():
+    """An encoder reads 0..360; a jaw straddling the wrap point is calibrated
+    with a negative bound, and its readings must come back to that span."""
+    from hdf52lerobot.source import GripperStream
+
+    # Closed at 343.51 degrees (written -16.49), open at 10.91.
+    straddling = GripperStream(
+        key="left_gripper",
+        path=Path("left_umi_087L_openv2_-16.49_10.91.hdf5"),
+        timestamps=np.arange(5, dtype=np.float64),
+        values=np.array([343.51, 350.0, 0.0, 5.0, 10.91]),
+        lo=-16.49,
+        hi=10.91,
+    )
+    assert np.allclose(straddling.unwrapped, [-16.49, -10.0, 0.0, 5.0, 10.91])
+    got = straddling.normalized()
+    assert got[0] == pytest.approx(0.0)      # 343.51 is closed, not "far past open"
+    assert got[-1] == pytest.approx(1.0)
+    assert np.all(np.diff(got) > 0)          # and the travel is monotone
+
+    # Without the wrap, 350 would sit 13x past the open end and clip to 1.0.
+    naive = np.clip((straddling.values - straddling.lo) / (straddling.hi - straddling.lo), 0, 1)
+    assert naive[1] == pytest.approx(1.0)
+
+    # A span that does not straddle the wrap point is untouched.
+    plain = GripperStream(
+        key="left_gripper",
+        path=Path("left_umi_035L_openv2_131.11_158.53.hdf5"),
+        timestamps=np.arange(4, dtype=np.float64),
+        values=np.array([131.11, 140.0, 158.53, 130.0]),
+        lo=131.11,
+        hi=158.53,
+    )
+    assert np.allclose(plain.unwrapped, plain.values)
+    assert plain.normalized()[-1] == pytest.approx(0.0)  # just under closed, clipped
+
+
+def test_gripper_rule_accepts_a_negative_calibration_bound():
+    config = ConverterConfig.from_yaml(
+        Path(__file__).resolve().parent.parent / "configs" / "tacverse_rdt.yaml"
+    )
+    rule = next(r for r in config.streams if r.kind == "gripper")
+    for name, lo, hi in (
+        ("left_umi_087L_openv2_-16.49_10.91.hdf5", "-16.49", "10.91"),
+        ("right_umi_035R_openv2_247.90_275.38.hdf5", "247.90", "275.38"),
+    ):
+        resolved = rule.match(name)
+        assert resolved is not None, name
+        assert (resolved[1]["lo"], resolved[1]["hi"]) == (lo, hi)
+
+
+def test_channel_bias_and_lookup_match_the_sdk_rule():
+    """bias = reference - measured, applied with saturation."""
+    from hdf52lerobot.imaging import apply_bias, bias_lookup, channel_bias
+
+    reference = {"red": 142.189, "green": 151.411, "blue": 165.365}
+    bias = channel_bias(reference, [120.0, 151.411, 200.0])
+    assert bias == pytest.approx([22.189, 0.0, -34.635])
+
+    lookup = bias_lookup(bias)
+    assert lookup.shape == (3, 256) and lookup.dtype == np.uint8
+    assert lookup[0][100] == 122      # 100 + round(22.189)
+    assert lookup[1][100] == 100      # untouched channel
+    assert lookup[2][100] == 65       # 100 - round(34.635)
+    assert lookup[0][250] == 255      # saturates, never wraps
+    assert lookup[2][10] == 0
+
+    frame = np.full((2, 3, 3), 100, dtype=np.uint8)
+    out = apply_bias(frame, lookup)
+    assert out.dtype == np.uint8
+    assert out[0, 0].tolist() == [122, 100, 65]
+
+    # A frame already at the reference is left where it is.
+    measured = [142.189, 151.411, 165.365]
+    assert channel_bias(reference, measured) == pytest.approx([0, 0, 0])
+
+    with pytest.raises(ValueError, match="missing"):
+        channel_bias({"red": 1.0, "green": 2.0}, [1, 2, 3])
+
+
+def test_rgb_reference_brings_a_camera_to_the_reference_tone(recording: Path, tmp_path: Path):
+    """Two cameras with different casts must come out with the same tone."""
+    import av
+
+    reference = {"red": 128.0, "green": 128.0, "blue": 128.0}
+    base = ConverterConfig(fps=FPS, gop=4, preset="ultrafast", task="t")
+    toned = replace(
+        base,
+        rgb_references={"TEST": reference},
+        rgb_bias_frames=10,
+        streams=tuple(
+            replace(rule, rgb_reference="TEST") if rule.key == "head" else rule
+            for rule in base.streams
+        ),
+    )
+
+    def channel_means(root: Path, key: str, limit: int | None = None) -> np.ndarray:
+        path = root / "videos" / f"observation.images.{key}" / "chunk-000" / "file-000.mp4"
+        with av.open(str(path)) as container:
+            frames = [
+                frame.to_ndarray(format="rgb24")
+                for position, frame in enumerate(container.decode(video=0))
+                if limit is None or position < limit
+            ]
+        return np.stack(frames).reshape(-1, 3).mean(axis=0)
+
+    plain = Hdf5ToLeRobotConverter([recording], tmp_path / "plain", base).convert()
+    fixed = Hdf5ToLeRobotConverter([recording], tmp_path / "fixed", toned).convert()
+
+    # The bias is measured from the opening frames, as the SDK measures at
+    # sensor init, so that is where the camera lands on the reference; encoding
+    # costs a level or two.
+    assert np.abs(channel_means(fixed, "head", 10) - 128.0).max() < 3.0
+    assert np.abs(channel_means(plain, "head", 10) - 128.0).max() > 5.0
+    # The whole recording moves by that one bias, not per frame.
+    shift = channel_means(fixed, "head") - channel_means(plain, "head")
+    assert np.allclose(shift, shift[0], atol=1.5)
+    # A camera without a reference is untouched.
+    assert np.allclose(
+        channel_means(plain, "left_wrist"), channel_means(fixed, "left_wrist"), atol=1.0
+    )
+
+    # With a channel-swapping transform, the tone must be measured *after* it,
+    # or the reference's red would be matched against the frame's blue.
+    swapped = replace(
+        toned,
+        streams=tuple(
+            replace(rule, transform=("bgr_to_rgb",), rgb_reference="TEST")
+            if rule.key == "head"
+            else rule
+            for rule in base.streams
+        ),
+    )
+    out = Hdf5ToLeRobotConverter([recording], tmp_path / "swapped", swapped).convert()
+    assert np.abs(channel_means(out, "head", 10) - 128.0).max() < 3.0
+
+
+def test_rgb_reference_must_name_a_known_entry():
+    rule = StreamRule(r"^x\.mkv$", "video", "x")
+    with pytest.raises(ValueError, match="not in rgb_references"):
+        ConverterConfig(streams=(replace(rule, rgb_reference="NOPE"),))
+    with pytest.raises(ValueError, match="missing"):
+        ConverterConfig(rgb_references={"BAD": {"red": 1.0}})
+    with pytest.raises(ValueError, match="only meaningful for 'video'"):
+        StreamRule(r"^x\.hdf5$", "pose", "x", rgb_reference="GSPS01")
+
+
 def test_shipped_config_loads():
     config = ConverterConfig.from_yaml(
         Path(__file__).resolve().parent.parent / "configs" / "hdf52lerobot.yaml"

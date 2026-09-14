@@ -135,6 +135,7 @@ class Hdf5ToLeRobotConverter:
                 stream.height,
                 self.config,
                 stream.transform,
+                stream.rgb_reference,
             )
             for stream in first.videos.values()
         }

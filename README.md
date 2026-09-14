@@ -155,13 +155,74 @@ hdf52lerobot --input /data/SuHang --output /data/SuHang_lerobot --task "your tas
 ```
 
 Stream classification is config-driven — a new camera is one more rule in
-[`configs/hdf52lerobot.yaml`](configs/hdf52lerobot.yaml), not a code change.
-[`configs/tacverse_rdt.yaml`](configs/tacverse_rdt.yaml) is the profile for the
-TacVerse-RDT recordings, whose recorder loop does not run at a fixed rate: it
-resamples every episode onto a 20 Hz grid (`pair: grid`) and keeps the
-recorder's own timestamps as `observation.source_timestamp`. See
+[`configs/hdf52lerobot.yaml`](configs/hdf52lerobot.yaml), not a code change. See
 [docs/hdf52lerobot.md](docs/hdf52lerobot.md) for the file-to-feature mapping,
 the pairing modes and the rotation/gripper conventions.
+
+## Converting the TacVerse-RDT corpus
+
+The RDT capture team delivers recordings filed by capture station, with no task
+text: `/data/data4/umi_data/<station>/ep_YYYYMMDD_HHMMSS/`. TacVerse datasets
+are one task each, so the conversion regroups them and needs the team's task
+schedule to do it. Three steps.
+
+**1. Build the task map.** A recording's date and half-day decide its task, via
+`采集任务时间安排表.xlsx`; [`configs/tacverse_rdt_catalogue.yaml`](configs/tacverse_rdt_catalogue.yaml)
+turns each code into English task text and a directory slug.
+
+```bash
+python tools/rdt_task_map.py \
+  --schedule ~/Documents/TacVerse-RDT-Rules/采集任务时间安排表.xlsx \
+  --input /data/data4/umi_data/035 --input /data/data4/umi_data/036 \
+  --output configs/tacverse_rdt_tasks.yaml
+```
+
+**2. See what will be produced.** One dataset per (task, date), merging every
+station that recorded that task that day.
+
+```bash
+python tools/rdt_convert.py --list
+```
+
+Half-days that list several task codes are reported here and **skipped**: the
+schedule says the session covered two or three tasks but not which recording is
+which, so those episodes cannot be filed until the capture team supplies a
+per-episode list. That is two thirds of the corpus.
+
+**3. Convert.** `--jobs` is datasets at a time, `--workers` cameras within one:
+
+```bash
+python tools/rdt_convert.py --jobs 12 --workers 7 \
+  --output /archive/lerobot/TacVerse/raw
+python tools/rdt_progress.py --output /archive/lerobot/TacVerse/raw   # watch it
+```
+
+Twelve jobs convert about 22 hours of recording per hour on a 32-core machine
+with an NVENC-capable GPU, so the 1245 hours that can be filed by task take
+about two days. Converting is resumable: a dataset with `meta/info.json` is
+left alone, one without is redone from scratch, and a lock file keeps two
+drivers off the same output tree.
+
+### What the profile does to this rig's data
+
+[`configs/tacverse_rdt.yaml`](configs/tacverse_rdt.yaml) is the profile, and
+every setting in it answers something measured in the recordings:
+
+| Setting | Why |
+|---|---|
+| `pair: grid`, `fps: 20` | The recorder's loop targets 30 Hz but stalls, averaging 20–24 Hz and varying per episode, so its iterations cannot be the time axis. Each episode is resampled onto a uniform grid. |
+| `keep_source_timestamp: true` | Keeps the recorder's own time for each frame beside LeRobot's `frame_index / fps`. |
+| `transform: [bgr_to_rgb, transpose]` on the tactile cameras | The rig recorded the Xense SDK's BGR bytes as if RGB, in the sensor's own 400×700 portrait frame. TacVerse stores tactile as 400×700 RGB. |
+| `rgb_reference: GSPS01` | SDK 2.1.x shifts each sensor onto a reference tone at init; these recordings predate that, and the sensors' channel means are spread over some fifty levels. |
+| `key: side` for the third camera | It is a fixed side view, not a headset camera, and the rig has no head tracker. |
+| `vcodec: h264_nvenc`, `crf: 21` | Encoding was two thirds of the CPU work. QP 21 matched libx264 CRF 23 on PSNR (41.85 dB against 41.75) in a smaller file at 3.1× the speed. |
+| `codec_threads: 1` | FFmpeg otherwise sizes every encoder and decoder to the whole machine: 1100 threads on 32 cores, and an episode taking 29.9 s instead of 19.4 s. |
+
+Gripper angles need no setting: the encoder reads 0–360 and five of the 32
+stations have a jaw straddling that wrap point, written as a negative
+calibration bound (`openv2_-16.49_10.91`). Readings come to the equivalent
+angle nearest the calibrated span before being normalised, which is identity
+for the other 59 jaws.
 
 ## Development
 

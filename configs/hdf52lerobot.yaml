@@ -51,7 +51,9 @@ streams:
 
   # The `lo`/`hi` groups are the jaw calibration bounds embedded in the file
   # name; hi is fully open, which normalizes to gripper.pos = 1.
-  - pattern: '^(?P<side>left|right)_umi_.*_openv2_(?P<lo>[\d.]+)_(?P<hi>[\d.]+)\.hdf5$'
+  # `lo` may be negative: the encoder reads 0..360 and a jaw whose travel
+  # straddles that wrap point is calibrated as, say, -16.49..10.91.
+  - pattern: '^(?P<side>left|right)_umi_.*_openv2_(?P<lo>-?[\d.]+)_(?P<hi>-?[\d.]+)\.hdf5$'
     kind: gripper
     key: '{side}_gripper'
 

@@ -19,7 +19,15 @@
 # bytes as if they were RGB, so the channels come back reversed. `bgr_to_rgb`
 # puts them back, which lines the frames up with every TacVerse dataset.
 #
-# 3. Tactile orientation. The capture path in xense-taccap-lerobot lays the
+# 3. Tactile tone. The SDK gained an init-time RGB bias in 2.1.x
+# (`init_rgb_bias`): a per-channel difference between the sensor model's
+# reference tone and what the unit actually produces, added to every rectified
+# frame so units converge. These recordings were made with 2.0.x, which has no
+# such step, and the sensors' channel means are spread over some fifty levels
+# -- a cast a model would learn as signal. `rgb_reference` applies the same
+# correction offline, measured from each recording's opening frames.
+#
+# 4. Tactile orientation. The capture path in xense-taccap-lerobot lays the
 # sensor's portrait frame down (cameras/xense/camera_xense.py transposes on
 # read), which is why TacVerse stores tactile as 400x700. This recorder wrote
 # the sensor's own 700x400, so `transpose` applies the same swap here.
@@ -81,10 +89,15 @@ streams:
     # BGR bytes written as RGB, and the sensor's portrait frame: put both back
     # the way the capture path would have.
     transform: [bgr_to_rgb, transpose]
+    rgb_reference: GSPS01
   - pattern: '^(?P<side>left|right)_umi_.*_tracker_.*\.hdf5$'
     kind: pose
     key: '{side}_tcp'
-  - pattern: '^(?P<side>left|right)_umi_.*_openv2_(?P<lo>[\d.]+)_(?P<hi>[\d.]+)\.hdf5$'
+  # `lo` is negative on five of the 32 stations: the encoder reads 0..360 and
+  # those jaws' travel straddles the wrap point, so closed is written as e.g.
+  # -16.49 (343.51 degrees). Without the sign these files match no rule and the
+  # whole recording is dropped for want of a gripper -- 15497 of them.
+  - pattern: '^(?P<side>left|right)_umi_.*_openv2_(?P<lo>-?[\d.]+)_(?P<hi>-?[\d.]+)\.hdf5$'
     kind: gripper
     key: '{side}_gripper'
 
@@ -98,6 +111,13 @@ streams:
 # a tactile stream came out at 41.85 dB PSNR against libx264 CRF 23's 41.75 dB,
 # in a slightly smaller file, at 3.1x the speed. `meta/info.json` still records
 # the codec as `h264`, so a reader cannot tell which engine produced it.
+# Reference tone for the GSPS01 tactile sensor, from the capture team.
+rgb_references:
+  GSPS01:
+    red: 142.189
+    green: 151.411
+    blue: 165.365
+
 vcodec: h264_nvenc
 pix_fmt: yuv420p
 crf: 21

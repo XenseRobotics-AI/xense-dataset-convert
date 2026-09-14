@@ -14,6 +14,11 @@ A camera can also carry frame transforms (see :mod:`hdf52lerobot.imaging`) for
 a recorder that wrote frames in the sensor's own colour order or orientation;
 those run before the encode, so the mp4, the feature shape and the statistics
 all describe the same picture.
+
+The same goes for a camera given an ``rgb_reference``: its opening frames are
+measured, the difference from the reference tone becomes a per-channel bias,
+and every frame is shifted by it. Sensors that would otherwise each carry their
+own colour cast then agree.
 """
 
 from __future__ import annotations
@@ -26,11 +31,10 @@ from typing import Callable, Iterable
 import numpy as np
 
 from .config import ConverterConfig
-from .imaging import compose, transformed_size
+from .imaging import bias_lookup, channel_bias, compose, transformed_size
 from .logger import get_logger
 
 logger = get_logger("hdf52lerobot.video")
-
 
 @dataclass
 class AppendResult:
@@ -56,6 +60,7 @@ class VideoAggregator:
         height: int,
         config: ConverterConfig,
         transform: tuple[str, ...] = (),
+        rgb_reference: str | None = None,
     ):
         """
         Args:
@@ -64,6 +69,9 @@ class VideoAggregator:
             transform: Frame transforms applied before encoding. The encoder is
                 sized from the result, so a transform that swaps the axes gives
                 an mp4 the other way round from its source.
+            rgb_reference: Name of a ``config.rgb_references`` entry. Given one,
+                each recording's opening frames set a per-channel bias that
+                brings this camera's tone to that reference.
         """
         self.root = Path(root)
         self.feature = feature
@@ -71,7 +79,10 @@ class VideoAggregator:
         self.height = int(height)
         self.config = config
         self.transform = tuple(transform)
-        self._apply = compose(self.transform)
+        self.rgb_reference = rgb_reference
+        # The transforms alone. Used to measure a recording's tone, and as the
+        # per-frame pipeline when there is no reference to shift towards.
+        self._plain = compose(self.transform)
         self.output_width, self.output_height = transformed_size(
             self.width, self.height, self.transform
         )
@@ -99,6 +110,22 @@ class VideoAggregator:
         return self.path_for(self._chunk_index, self._file_index)
 
     # -- lifecycle -----------------------------------------------------------
+
+    def _decode(self, source_path: Path):
+        """Frames of one source video, decoded with the configured threading.
+
+        GPU decoding was measured here and dropped: `av1_cuvid` decodes a single
+        tactile stream in 0.34 s per 400 frames against libdav1d's 0.63 s, but
+        the whole conversion got slower either way it was run -- 431 against 558
+        episodes an hour in one process, 791 against 986 across eight. Whatever
+        the cuvid path costs in this pipeline outweighs what it saves.
+        """
+        import av
+
+        with av.open(str(source_path)) as container:
+            if self.config.codec_threads:
+                container.streams.video[0].thread_count = self.config.codec_threads
+            yield from container.decode(video=0)
 
     def _open(self) -> None:
         import av
@@ -151,6 +178,32 @@ class VideoAggregator:
 
     # -- writing -------------------------------------------------------------
 
+    def _bias_lookup(self, source_path: Path) -> "np.ndarray | None":
+        """Per-channel table bringing this recording's tone to the reference.
+
+        Measured from the opening frames, which are the gel at rest -- the same
+        moment the SDK measures at sensor init.
+        """
+        if not self.rgb_reference:
+            return None
+        reference = self.config.rgb_references[self.rgb_reference]
+        totals = np.zeros(3, dtype=np.float64)
+        pixels = 0
+        for position, frame in enumerate(self._decode(source_path)):
+            if position >= self.config.rgb_bias_frames:
+                break
+            image = frame.to_ndarray(format="rgb24")
+            if self._plain is not None:
+                # Measured after the transforms: `bgr_to_rgb` decides which
+                # channel is red, and the reference is named by colour.
+                image = self._plain(image)
+            flat = image.reshape(-1, 3)
+            totals += flat.sum(axis=0)
+            pixels += flat.shape[0]
+        if not pixels:
+            raise ValueError(f"{source_path.name}: no frames to measure the colour tone from")
+        return bias_lookup(channel_bias(reference, totals / pixels))
+
     def append(
         self,
         source_path: Path,
@@ -181,6 +234,11 @@ class VideoAggregator:
         if np.any(np.diff(indices) < 0):
             raise ValueError(f"{source_path.name}: frame indices must be non-decreasing")
 
+        apply = self._plain
+        if self.rgb_reference:
+            # One pass per frame: the transforms and the tone shift together.
+            apply = compose(self.transform, self._bias_lookup(source_path))
+
         self._roll_if_needed()
         if self._container is None:
             self._open()
@@ -189,53 +247,50 @@ class VideoAggregator:
         samples: dict[int, np.ndarray] = {}
         first_frame = self._frames_in_file
 
-        with av.open(str(source_path)) as container:
-            if self.config.codec_threads:
-                container.streams.video[0].thread_count = self.config.codec_threads
-            decoded = container.decode(video=0)
-            source_position = -1
-            current = None
-            for output_position, wanted_index in enumerate(indices):
-                while source_position < wanted_index:
-                    try:
-                        current = next(decoded)
-                    except StopIteration as error:
-                        raise ValueError(
-                            f"{source_path.name}: needs frame {wanted_index} but the stream "
-                            f"ended after {source_position + 1} frames"
-                        ) from error
-                    source_position += 1
-
-                if current.width != self.width or current.height != self.height:
+        decoded = self._decode(source_path)
+        source_position = -1
+        current = None
+        for output_position, wanted_index in enumerate(indices):
+            while source_position < wanted_index:
+                try:
+                    current = next(decoded)
+                except StopIteration as error:
                     raise ValueError(
-                        f"{source_path.name}: frame size changed to "
-                        f"{current.width}x{current.height}, expected {self.width}x{self.height}"
+                        f"{source_path.name}: needs frame {wanted_index} but the stream "
+                        f"ended after {source_position + 1} frames"
+                    ) from error
+                source_position += 1
+
+            if current.width != self.width or current.height != self.height:
+                raise ValueError(
+                    f"{source_path.name}: frame size changed to "
+                    f"{current.width}x{current.height}, expected {self.width}x{self.height}"
+                )
+            if apply is None:
+                frame = current.reformat(format=self.config.pix_fmt)
+                if output_position in wanted:
+                    sample = current.to_ndarray(format="rgb24")
+                    samples[output_position] = (
+                        sample_transform(sample) if sample_transform else sample
                     )
-                if self._apply is None:
-                    frame = current.reformat(format=self.config.pix_fmt)
-                    if output_position in wanted:
-                        sample = current.to_ndarray(format="rgb24")
-                        samples[output_position] = (
-                            sample_transform(sample) if sample_transform else sample
-                        )
-                else:
-                    # One decode, one transform: the encoder and the statistics
-                    # both take the transformed frame, so they cannot disagree.
-                    image = self._apply(current.to_ndarray(format="rgb24"))
-                    if output_position in wanted:
-                        samples[output_position] = (
-                            sample_transform(image) if sample_transform else image
-                        )
-                    frame = av.VideoFrame.from_ndarray(image, format="rgb24").reformat(
-                        format=self.config.pix_fmt
+            else:
+                # One decode, one transform: the encoder and the statistics
+                # both take the transformed frame, so they cannot disagree.
+                image = apply(current.to_ndarray(format="rgb24"))
+                if output_position in wanted:
+                    samples[output_position] = (
+                        sample_transform(image) if sample_transform else image
                     )
-                # Explicit CFR timing: the source pts are the recorder's jittery
-                # arrival times, and LeRobot needs frame i to sit exactly at i/fps.
-                frame.pts = self._frames_in_file
-                frame.time_base = self._frame_time_base
-                for packet in self._stream.encode(frame):
-                    self._container.mux(packet)
-                self._frames_in_file += 1
+                frame = av.VideoFrame.from_ndarray(image, format="rgb24").reformat(
+                    format=self.config.pix_fmt
+                )
+            # Explicit CFR timing: the source pts are the recorder's jittery
+            # arrival times, and LeRobot needs frame i to sit exactly at i/fps.
+            frame.pts = self._frames_in_file
+            frame.time_base = self._frame_time_base
+            for packet in self._stream.encode(frame):
+                self._container.mux(packet)
+            self._frames_in_file += 1
 
         return AppendResult(
             chunk_index=self._chunk_index,

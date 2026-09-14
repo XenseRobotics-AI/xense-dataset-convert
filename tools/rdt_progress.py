@@ -2,11 +2,17 @@
 """Show how far the TacVerse-RDT bulk conversion has got.
 
 A conversion writes nothing a reader can count until it finalises -- the
-parquet and the videos are still being appended -- so progress comes from the
-per-dataset logs instead: the converter writes one `grid 20Hz:` line per
-episode it has finished. Counting those against the episodes each dataset is
-supposed to hold gives a percentage, and the rate over the run so far gives a
-finish time.
+parquet and the videos are still being appended -- so progress for a dataset
+still running comes from its log: the converter writes one `grid 20Hz:` line
+per episode it finishes. A dataset that *has* finalised is read from its own
+metadata instead, which is both authoritative and immune to the logs being
+appended across runs.
+
+An episode that cannot be converted is not outstanding work, so the percentage
+counts converted *and* skipped against the total, and reaches 100% when the run
+is over. Rate and finish time are shown only while something is still running:
+after that, elapsed time keeps growing while nothing is produced, and a rate
+computed from it says less every minute.
 
     python tools/rdt_progress.py                     # one look
     watch -n 60 python tools/rdt_progress.py         # keep it on screen
@@ -84,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, total in sorted(expected.items(), key=lambda kv: -kv[1]):
         log = log_dir / f"{name}.log"
         info = args.output / name / "meta" / "info.json"
+        sources = args.output / name / "meta" / "sources.json"
         done = skipped = 0
         if log.exists():
             text = log.read_text(encoding="utf-8", errors="replace")
@@ -91,7 +98,13 @@ def main(argv: list[str] | None = None) -> int:
             skipped = len(SKIPPED.findall(text))
         if info.exists():
             state = "done"
+            # The dataset's own record, not the log: logs are appended across
+            # runs, so an interrupted first attempt would be counted twice.
             done = json.loads(info.read_text(encoding="utf-8"))["total_episodes"]
+            if sources.exists():
+                skipped = len(
+                    json.loads(sources.read_text(encoding="utf-8")).get("skipped", [])
+                )
         elif log.exists() and done:
             state = "running"
         elif log.exists():
@@ -103,21 +116,28 @@ def main(argv: list[str] | None = None) -> int:
         skipped_total += skipped
         expected_total += total
 
+    finished = all(state == "done" for _, state, _, _, _ in rows)
     elapsed = time.time() - started_at if started_at else 0
     rate = done_total / elapsed if elapsed > 0 else 0
-    remaining = (expected_total - done_total) / rate if rate > 0 else float("nan")
+    # What is left to do, not what was skipped: a skipped episode is settled.
+    outstanding = expected_total - done_total - skipped_total
+    remaining = outstanding / rate if rate > 0 else float("nan")
 
     print(f"{'dataset':46s} {'state':9s} {'episodes':>16s} {'skipped':>8s}  progress")
     for name, state, done, skipped, total in rows:
-        share = done / total if total else 0
+        share = (done + skipped) / total if total else 0
         bar = "#" * round(share * 24)
         print(f"{name:46s} {state:9s} {done:7d} / {total:6d} {skipped:8d}  {bar:<24s} {share*100:5.1f}%")
 
+    settled = done_total + skipped_total
     print(
-        f"\n{done_total} / {expected_total} episodes ({100 * done_total / expected_total:.1f}%), "
+        f"\n{settled} / {expected_total} episodes settled "
+        f"({100 * settled / expected_total:.1f}%): {done_total} converted, "
         f"{skipped_total} skipped as unusable"
     )
-    if rate > 0:
+    if finished:
+        print(f"finished: all {len(rows)} dataset(s) converted in {human(elapsed)}")
+    elif rate > 0:
         finish = datetime.datetime.now() + datetime.timedelta(seconds=remaining)
         print(
             f"running {human(elapsed)}, {rate * 3600:.0f} episodes/hour, "

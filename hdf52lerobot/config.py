@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from .imaging import validate_transforms
+from .imaging import CHANNEL_ORDER, validate_transforms
 
 VIDEO = "video"
 POSE = "pose"
@@ -45,12 +45,16 @@ class StreamRule:
             that wrote the sensor's own BGR portrait frames needs
             ``[bgr_to_rgb, transpose]`` to match what the capture path
             produces.
+        rgb_reference: Name of an entry in ``ConverterConfig.rgb_references``.
+            Given one, this camera's overall tone is brought to that reference,
+            the way the Xense SDK does at sensor init. Videos only.
     """
 
     pattern: str
     kind: str
     key: str
     transform: tuple[str, ...] = ()
+    rgb_reference: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -60,6 +64,10 @@ class StreamRule:
         if self.transform and self.kind != VIDEO:
             raise ValueError(
                 f"transform is only meaningful for {VIDEO!r} streams, not {self.kind!r}"
+            )
+        if self.rgb_reference and self.kind != VIDEO:
+            raise ValueError(
+                f"rgb_reference is only meaningful for {VIDEO!r} streams, not {self.kind!r}"
             )
 
     def match(self, filename: str) -> tuple[str, dict[str, str]] | None:
@@ -180,6 +188,25 @@ class ConverterConfig:
     video_options: dict[str, str] = field(default_factory=dict)
     """Encoder options merged over the derived ones, for anything the fields
     above do not name (``tune``, ``rc-lookahead``, ``spatial-aq``)."""
+
+    rgb_references: dict[str, dict[str, float]] = field(default_factory=dict)
+    """Reference channel tone per sensor model, e.g.::
+
+        rgb_references:
+          GSPS01: {red: 142.189, green: 151.411, blue: 165.365}
+
+    A stream rule naming one of these has its frames shifted so the camera's
+    own channel means land on the reference -- what the Xense SDK computes at
+    init from the unit's reference image (2.1.x ``init_rgb_bias``) and what a
+    recording made with 2.0.x lacks, leaving every sensor its own colour cast.
+    """
+
+    rgb_bias_frames: int = 30
+    """Frames measured at the start of a recording to estimate a camera's tone.
+
+    The SDK measures one frame at init. Thirty is still the untouched gel and
+    steadier: across six recordings of one sensor, a mean from the first thirty
+    frames and one sampled over the whole recording differed by 0.2 levels."""
     gop: int = 30
     """Keyframe interval. Sources arrive with GOPs of 200+ frames, which makes
     LeRobot's random-access reads crawl; TacCap sits near 57."""
@@ -223,6 +250,18 @@ class ConverterConfig:
             raise ValueError("gop must be positive")
         if self.codec_threads < 0:
             raise ValueError("codec_threads must be 0 (auto) or positive")
+        if self.rgb_bias_frames <= 0:
+            raise ValueError("rgb_bias_frames must be positive")
+        for name, reference in self.rgb_references.items():
+            missing = [c for c in CHANNEL_ORDER if c not in reference]
+            if missing:
+                raise ValueError(f"rgb_references[{name!r}] is missing {missing}")
+        for rule in self.streams:
+            if rule.rgb_reference and rule.rgb_reference not in self.rgb_references:
+                raise ValueError(
+                    f"stream {rule.key!r} names rgb_reference {rule.rgb_reference!r}, "
+                    f"which is not in rgb_references"
+                )
         self.state_layout = tuple(self.state_layout)
         self.streams = tuple(self.streams)
         if not self.state_layout:
@@ -299,11 +338,17 @@ class ConverterConfig:
                     kind=item["kind"],
                     key=item["key"],
                     transform=tuple(item.get("transform") or ()),
+                    rgb_reference=item.get("rgb_reference"),
                 )
                 for item in rules
             )
         if "state_layout" in raw:
             raw["state_layout"] = tuple(raw["state_layout"])
+        if "rgb_references" in raw and raw["rgb_references"] is not None:
+            raw["rgb_references"] = {
+                str(name): {str(k): float(v) for k, v in dict(ref).items()}
+                for name, ref in dict(raw["rgb_references"]).items()
+            }
         if "video_options" in raw and raw["video_options"] is not None:
             raw["video_options"] = {
                 str(key): str(value) for key, value in dict(raw["video_options"]).items()

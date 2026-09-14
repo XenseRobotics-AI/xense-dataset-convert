@@ -68,10 +68,12 @@ lerobot2mcap = "lerobot2mcap:main"
 lerobot2zarr = "lerobot2zarr.zarr_cli:main"
 mcap2lerobot = "mcap2lerobot.cli:main"
 hdf52lerobot = "hdf52lerobot.cli:main"
+rlds2lerobot = "rlds2lerobot.cli:main"
 
 [project.optional-dependencies]
 # `pip install -e .[dev]` -- what the test suite and the CI lint job need.
 dev = ["pytest>=8", "ruff"]
+rlds = ["tensorflow>=2.16", "tensorflow-datasets>=4.9"]
 
 [tool.setuptools]
 packages = [
@@ -81,6 +83,7 @@ packages = [
   "hdf52lerobot",
   "xense_dataset_convert",
   "xense_dataset_convert.adapters",
+  "rlds2lerobot",
 ]
 
 [tool.setuptools.package-data]

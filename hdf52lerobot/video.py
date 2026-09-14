@@ -14,6 +14,11 @@ A camera can also carry frame transforms (see :mod:`hdf52lerobot.imaging`) for
 a recorder that wrote frames in the sensor's own colour order or orientation;
 those run before the encode, so the mp4, the feature shape and the statistics
 all describe the same picture.
+
+The same goes for a camera given an ``rgb_reference``: its opening frames are
+measured, the difference from the reference tone becomes a per-channel bias,
+and every frame is shifted by it. Sensors that would otherwise each carry their
+own colour cast then agree.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ from typing import Callable, Iterable
 import numpy as np
 
 from .config import ConverterConfig
-from .imaging import compose, transformed_size
+from .imaging import apply_bias, bias_lookup, channel_bias, compose, transformed_size
 from .logger import get_logger
 
 logger = get_logger("hdf52lerobot.video")
@@ -56,6 +61,7 @@ class VideoAggregator:
         height: int,
         config: ConverterConfig,
         transform: tuple[str, ...] = (),
+        rgb_reference: str | None = None,
     ):
         """
         Args:
@@ -64,6 +70,9 @@ class VideoAggregator:
             transform: Frame transforms applied before encoding. The encoder is
                 sized from the result, so a transform that swaps the axes gives
                 an mp4 the other way round from its source.
+            rgb_reference: Name of a ``config.rgb_references`` entry. Given one,
+                each recording's opening frames set a per-channel bias that
+                brings this camera's tone to that reference.
         """
         self.root = Path(root)
         self.feature = feature
@@ -71,6 +80,7 @@ class VideoAggregator:
         self.height = int(height)
         self.config = config
         self.transform = tuple(transform)
+        self.rgb_reference = rgb_reference
         self._apply = compose(self.transform)
         self.output_width, self.output_height = transformed_size(
             self.width, self.height, self.transform
@@ -151,6 +161,35 @@ class VideoAggregator:
 
     # -- writing -------------------------------------------------------------
 
+    def _bias_lookup(self, source_path: Path) -> "np.ndarray | None":
+        """Per-channel table bringing this recording's tone to the reference.
+
+        Measured from the opening frames, which are the gel at rest -- the same
+        moment the SDK measures at sensor init.
+        """
+        if not self.rgb_reference:
+            return None
+        import av
+
+        reference = self.config.rgb_references[self.rgb_reference]
+        totals = np.zeros(3, dtype=np.float64)
+        pixels = 0
+        with av.open(str(source_path)) as container:
+            if self.config.codec_threads:
+                container.streams.video[0].thread_count = self.config.codec_threads
+            for position, frame in enumerate(container.decode(video=0)):
+                if position >= self.config.rgb_bias_frames:
+                    break
+                image = frame.to_ndarray(format="rgb24")
+                if self._apply is not None:
+                    image = self._apply(image)
+                flat = image.reshape(-1, 3)
+                totals += flat.sum(axis=0)
+                pixels += flat.shape[0]
+        if not pixels:
+            raise ValueError(f"{source_path.name}: no frames to measure the colour tone from")
+        return bias_lookup(channel_bias(reference, totals / pixels))
+
     def append(
         self,
         source_path: Path,
@@ -180,6 +219,8 @@ class VideoAggregator:
             raise ValueError(f"{source_path.name}: no frames requested")
         if np.any(np.diff(indices) < 0):
             raise ValueError(f"{source_path.name}: frame indices must be non-decreasing")
+
+        lookup = self._bias_lookup(source_path)
 
         self._roll_if_needed()
         if self._container is None:
@@ -211,7 +252,7 @@ class VideoAggregator:
                         f"{source_path.name}: frame size changed to "
                         f"{current.width}x{current.height}, expected {self.width}x{self.height}"
                     )
-                if self._apply is None:
+                if self._apply is None and lookup is None:
                     frame = current.reformat(format=self.config.pix_fmt)
                     if output_position in wanted:
                         sample = current.to_ndarray(format="rgb24")
@@ -221,7 +262,11 @@ class VideoAggregator:
                 else:
                     # One decode, one transform: the encoder and the statistics
                     # both take the transformed frame, so they cannot disagree.
-                    image = self._apply(current.to_ndarray(format="rgb24"))
+                    image = current.to_ndarray(format="rgb24")
+                    if self._apply is not None:
+                        image = self._apply(image)
+                    if lookup is not None:
+                        image = apply_bias(image, lookup)
                     if output_position in wanted:
                         samples[output_position] = (
                             sample_transform(image) if sample_transform else image

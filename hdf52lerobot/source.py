@@ -33,7 +33,15 @@ class PoseStream:
 
 @dataclass
 class GripperStream:
-    """A jaw encoder with its calibration bounds parsed from the file name."""
+    """A jaw encoder with its calibration bounds parsed from the file name.
+
+    The encoder reports an angle in ``[0, 360)``. A jaw whose travel happens to
+    straddle the wrap point has a calibration written with a negative bound --
+    ``openv2_-16.49_10.91`` means closed at 343.51 degrees and open at 10.91 --
+    and its readings jump between the two ends of the range. So a reading is
+    first brought to the equivalent angle nearest the calibrated span; for a
+    span that does not straddle the wrap point this changes nothing.
+    """
 
     key: str
     path: Path
@@ -43,12 +51,18 @@ class GripperStream:
     hi: float
     kind: str = GRIPPER
 
+    @property
+    def unwrapped(self) -> np.ndarray:
+        """Readings as the angle nearest the middle of the calibrated span."""
+        middle = 0.5 * (self.lo + self.hi)
+        return middle + (self.values - middle + 180.0) % 360.0 - 180.0
+
     def normalized(self) -> np.ndarray:
-        """Map raw encoder counts to ``[0, 1]``, 0 = closed, 1 = open."""
+        """Map raw encoder angles to ``[0, 1]``, 0 = closed, 1 = open."""
         span = self.hi - self.lo
         if span == 0:
             raise ValueError(f"{self.path.name}: degenerate gripper calibration [{self.lo}, {self.hi}]")
-        return np.clip((self.values - self.lo) / span, 0.0, 1.0)
+        return np.clip((self.unwrapped - self.lo) / span, 0.0, 1.0)
 
 
 @dataclass
@@ -69,6 +83,7 @@ class VideoStream:
     """Frames the file actually holds. ``-1`` when it was not counted."""
     kind: str = VIDEO
     transform: tuple[str, ...] = ()
+    rgb_reference: str | None = None
 
     @property
     def feature(self) -> str:
@@ -194,7 +209,9 @@ def read_episode(path: str | Path, config: ConverterConfig) -> SourceEpisode:
             if resolved is None:
                 continue
             key, groups = resolved
-            _add_stream(episode, rule.kind, key, entry, groups, rule.transform)
+            _add_stream(
+                episode, rule.kind, key, entry, groups, rule.transform, rule.rgb_reference
+            )
             matched = True
             break
         if not matched:
@@ -213,6 +230,7 @@ def _add_stream(
     path: Path,
     groups: dict[str, str],
     transform: tuple[str, ...] = (),
+    rgb_reference: str | None = None,
 ) -> None:
     existing = episode.all_streams().get(key)
     if existing is not None:
@@ -232,6 +250,7 @@ def _add_stream(
             height=height,
             frames=frames,
             transform=transform,
+            rgb_reference=rgb_reference,
         )
         return
 
@@ -285,11 +304,12 @@ def _validate(episode: SourceEpisode, config: ConverterConfig) -> None:
             )
 
     for key, gripper in episode.grippers.items():
+        values = gripper.unwrapped
         outside = np.count_nonzero(
-            (gripper.values < gripper.lo - 1e-9) | (gripper.values > gripper.hi + 1e-9)
+            (values < gripper.lo - 1e-9) | (values > gripper.hi + 1e-9)
         )
         if outside:
-            fraction = 100.0 * outside / len(gripper.values)
+            fraction = 100.0 * outside / len(values)
             logger.warn(
                 f"{episode.name}: {key} has {outside} sample(s) ({fraction:.1f}%) outside the "
                 f"calibrated range [{gripper.lo}, {gripper.hi}]; they will be clipped"

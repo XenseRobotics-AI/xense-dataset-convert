@@ -19,7 +19,7 @@ Named in the stream rules:
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -92,6 +92,49 @@ def compose(names: Sequence[str]) -> Callable[[np.ndarray], np.ndarray] | None:
         return np.ascontiguousarray(frame)
 
     return apply
+
+
+# Channel order of a frame once the transforms have run: the dataset stores RGB.
+CHANNEL_ORDER = ("red", "green", "blue")
+
+
+def channel_bias(reference: Mapping[str, float], measured: Sequence[float]) -> np.ndarray:
+    """``reference - measured`` per channel, in :data:`CHANNEL_ORDER`.
+
+    What the Xense SDK computes at sensor init (2.1.x ``init_rgb_bias``): the
+    difference between a reference tone for the sensor model and what this unit
+    actually produces, added to every frame so units converge on one tone.
+    """
+    missing = [name for name in CHANNEL_ORDER if name not in reference]
+    if missing:
+        raise ValueError(f"rgb reference is missing {missing}; expected {list(CHANNEL_ORDER)}")
+    wanted = np.array([float(reference[name]) for name in CHANNEL_ORDER])
+    actual = np.asarray(measured, dtype=np.float64).ravel()
+    if actual.size != 3:
+        raise ValueError(f"expected three channel means, got {actual.size}")
+    return wanted - actual
+
+
+def bias_lookup(bias: np.ndarray) -> np.ndarray:
+    """``(3, 256)`` uint8 table applying ``bias`` with saturation.
+
+    A table costs one pass of `np.take` per channel, against a widening add and
+    a clip over the whole frame; the SDK builds the same thing for the same
+    reason.
+    """
+    levels = np.arange(256, dtype=np.int32)
+    rounded = np.rint(np.asarray(bias, dtype=np.float64)).astype(np.int32)
+    return np.clip(levels[None, :] + rounded[:, None], 0, 255).astype(np.uint8)
+
+
+def apply_bias(frame: np.ndarray, lookup: np.ndarray) -> np.ndarray:
+    """Apply a :func:`bias_lookup` table to an ``(..., 3)`` uint8 frame."""
+    if frame.ndim < 3 or frame.shape[-1] != 3:
+        raise ValueError(f"apply_bias expects a 3-channel frame, got shape {frame.shape}")
+    out = np.empty_like(frame)
+    for channel in range(3):
+        np.take(lookup[channel], frame[..., channel], out=out[..., channel])
+    return out
 
 
 def transformed_size(width: int, height: int, names: Sequence[str]) -> tuple[int, int]:

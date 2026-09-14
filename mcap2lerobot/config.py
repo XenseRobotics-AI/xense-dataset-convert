@@ -6,6 +6,10 @@ from dataclasses import dataclass
 
 DEFAULT_TASK = "Converted from MCAP"
 DEFAULT_ROBOT_TYPE = "mcap"
+AUTO_PROFILE = "auto"
+ROS2_PROFILE = "ros2"
+DAS_EGO_PROFILE = "das-ego"
+SUPPORTED_PROFILES = frozenset({AUTO_PROFILE, ROS2_PROFILE, DAS_EGO_PROFILE})
 
 # Source layouts mcap2lerobot can read. "xtac" is the default: XTacData
 # recordings from the XTac-UMI-G1 grippers. "lerobot_roundtrip" is the ROS2 CDR
@@ -41,6 +45,7 @@ class ConverterConfig:
     max_sync_gap_frames: float = 1.5
     task: str | None = None
     robot_type: str | None = None
+    profile: str = AUTO_PROFILE
 
     def __post_init__(self) -> None:
         if self.dialect not in DIALECTS:
@@ -56,6 +61,11 @@ class ConverterConfig:
             raise ValueError("fps must be greater than zero")
         if self.max_sync_gap_frames <= 0:
             raise ValueError("max_sync_gap_frames must be greater than zero")
+        profile = self.profile.lower().strip()
+        if profile not in SUPPORTED_PROFILES:
+            choices = ", ".join(sorted(SUPPORTED_PROFILES))
+            raise ValueError(f"profile must be one of {choices}, got {self.profile!r}")
+        object.__setattr__(self, "profile", profile)
 
     def video_feature_name(self, topic: str) -> str | None:
         normalized = normalize_topic(topic)

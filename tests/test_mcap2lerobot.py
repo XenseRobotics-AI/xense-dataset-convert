@@ -19,6 +19,14 @@ from mcap2lerobot.converter import (
     resolve_robot_type,
     source_video_codec,
 )
+from mcap2lerobot.das_ego import (
+    DAS_EGO_CAMERA_FEATURES,
+    DAS_EGO_IMU_FEATURE,
+    DAS_EGO_ROBOT_TYPE,
+    DAS_EGO_TASK,
+    DasEgoEpisodeReader,
+    detect_mcap_profile,
+)
 from mcap2lerobot.reader import (
     EpisodeData,
     McapEpisodeReader,
@@ -32,12 +40,16 @@ HEAD = "observation.images.head"
 TIMESTAMPS = (0, 33_333_333, 66_666_666)
 
 
-def make_episode(path: Path, offset_ns: int = 0, task_index: int | None = None) -> EpisodeData:
+def make_episode(
+    path: Path, offset_ns: int = 0, task_index: int | None = None
+) -> EpisodeData:
     timestamps = [offset_ns + value for value in TIMESTAMPS]
     return EpisodeData(
         source=path,
         states=[
-            TimedArray(timestamp, np.array([index, index + 1], dtype=np.float32), task_index)
+            TimedArray(
+                timestamp, np.array([index, index + 1], dtype=np.float32), task_index
+            )
             for index, timestamp in enumerate(timestamps)
         ],
         actions=[
@@ -74,7 +86,10 @@ class FakeReader:
     def iter_frames(self, episode, video_index):
         per_camera = self.frames.get(episode.source.name, {HEAD: head_frames()})
         for position in range(len(episode.states)):
-            yield {name: per_camera[name][int(index[position])] for name, index in video_index.items()}
+            yield {
+                name: per_camera[name][int(index[position])]
+                for name, index in video_index.items()
+            }
 
 
 class FakeDataset:
@@ -192,7 +207,9 @@ def test_converts_multiple_mcap_files_to_one_dataset(tmp_path):
     assert dataset.kwargs["use_videos"] is True
     assert len(dataset.episodes) == 2
     assert len(dataset.episodes[0]) == 3
-    assert "timestamp" not in dataset.episodes[0][1]  # lerobot derives it; passing it is rejected
+    assert (
+        "timestamp" not in dataset.episodes[0][1]
+    )  # lerobot derives it; passing it is rejected
     assert dataset.episodes[0][1]["task"] == "pick"
     assert dataset.episodes[0][1]["action"].tolist() == [3.0]
     assert dataset.episodes[0][1][HEAD][0, 0, 0] == 1
@@ -205,7 +222,9 @@ def test_out_of_sync_episode_fails_before_the_dataset_is_created(tmp_path):
     path = input_dir / "episode_000.mcap"
     path.touch()
     episode = make_episode(path)
-    episode.actions = [TimedArray(ts + 10**9, a.value) for ts, a in zip(TIMESTAMPS, episode.actions)]
+    episode.actions = [
+        TimedArray(ts + 10**9, a.value) for ts, a in zip(TIMESTAMPS, episode.actions)
+    ]
     factory_calls = []
 
     converter = McapToLeRobotConverter(
@@ -213,7 +232,9 @@ def test_out_of_sync_episode_fails_before_the_dataset_is_created(tmp_path):
         output_root=tmp_path / "output",
         repo_id="local/test",
         reader=FakeReader({path.name: episode}),
-        dataset_factory=lambda **kwargs: factory_calls.append(kwargs) or FakeDataset(kwargs),
+        dataset_factory=lambda **kwargs: (
+            factory_calls.append(kwargs) or FakeDataset(kwargs)
+        ),
     )
     with pytest.raises(ValueError, match="exceeding"):
         converter.convert()
@@ -225,7 +246,11 @@ EMBEDDED_INFO = {
     "fps": 20,
     "robot_type": "bi_rdt_gripper",
     "features": {
-        "observation.state": {"dtype": "float32", "shape": [2], "names": ["left.x", "left.y"]},
+        "observation.state": {
+            "dtype": "float32",
+            "shape": [2],
+            "names": ["left.x", "left.y"],
+        },
         "action": {"dtype": "float32", "shape": [1], "names": ["grip"]},
         HEAD: {
             "dtype": "video",
@@ -235,14 +260,22 @@ EMBEDDED_INFO = {
         },
     },
 }
-EMBEDDED_EPISODE = {"episode_index": 0, "length": 3, "tasks": ["pick up the cup"], "task_index_to_task": {"0": "pick up the cup"}}
+EMBEDDED_EPISODE = {
+    "episode_index": 0,
+    "length": 3,
+    "tasks": ["pick up the cup"],
+    "task_index_to_task": {"0": "pick up the cup"},
+}
 
 
 def _embedded_episode(path: Path) -> EpisodeData:
     episode = make_episode(path, task_index=0)
     # The MCAP schema hands the reader float64 for a float32 source; the
     # declaration is what restores the dtype.
-    episode.states = [TimedArray(s.timestamp_ns, s.value.astype(np.float64), s.task_index) for s in episode.states]
+    episode.states = [
+        TimedArray(s.timestamp_ns, s.value.astype(np.float64), s.task_index)
+        for s in episode.states
+    ]
     episode.info = EMBEDDED_INFO
     episode.episode_meta = EMBEDDED_EPISODE
     return episode
@@ -253,7 +286,11 @@ def test_embedded_metadata_restores_names_dtype_fps_robot_type_codec_and_task(tm
     config = ConverterConfig()
 
     features = build_features(episode)
-    assert features["observation.state"] == {"dtype": "float32", "shape": (2,), "names": ["left.x", "left.y"]}
+    assert features["observation.state"] == {
+        "dtype": "float32",
+        "shape": (2,),
+        "names": ["left.x", "left.y"],
+    }
     assert features["action"]["names"] == ["grip"]
     assert features[HEAD]["shape"] == (2, 3, 3)
     assert resolve_fps(config, episode) == 20
@@ -302,7 +339,10 @@ def test_explicit_overrides_beat_embedded_metadata(tmp_path):
 def test_without_embedded_metadata_the_old_defaults_apply(tmp_path):
     episode = make_episode(tmp_path / "episode_000.mcap")
     config = ConverterConfig()
-    assert build_features(episode)["observation.state"]["names"] == ["state_0", "state_1"]
+    assert build_features(episode)["observation.state"]["names"] == [
+        "state_0",
+        "state_1",
+    ]
     assert resolve_fps(config, episode) == 30  # inferred
     assert resolve_robot_type(config, episode) == DEFAULT_ROBOT_TYPE
     assert source_video_codec(episode) is None
@@ -311,8 +351,19 @@ def test_without_embedded_metadata_the_old_defaults_apply(tmp_path):
 
 def test_mismatched_embedded_declaration_is_ignored(tmp_path):
     episode = make_episode(tmp_path / "episode_000.mcap")
-    episode.info = {"features": {"observation.state": {"dtype": "float32", "shape": [5], "names": list("abcde")}}}
-    assert build_features(episode)["observation.state"]["names"] == ["state_0", "state_1"]
+    episode.info = {
+        "features": {
+            "observation.state": {
+                "dtype": "float32",
+                "shape": [5],
+                "names": list("abcde"),
+            }
+        }
+    }
+    assert build_features(episode)["observation.state"]["names"] == [
+        "state_0",
+        "state_1",
+    ]
 
 
 def test_reader_parses_the_attachments_lerobot2mcap_writes(tmp_path):
@@ -324,8 +375,16 @@ def test_reader_parses_the_attachments_lerobot2mcap_writes(tmp_path):
     with path.open("wb") as stream:
         writer = Writer(stream)
         writer.start()
-        writer.add_attachment(0, 0, "meta/info.json", "text/plain", json.dumps(EMBEDDED_INFO).encode())
-        writer.add_attachment(0, 0, "meta/episode.json", "text/plain", json.dumps(EMBEDDED_EPISODE).encode())
+        writer.add_attachment(
+            0, 0, "meta/info.json", "text/plain", json.dumps(EMBEDDED_INFO).encode()
+        )
+        writer.add_attachment(
+            0,
+            0,
+            "meta/episode.json",
+            "text/plain",
+            json.dumps(EMBEDDED_EPISODE).encode(),
+        )
         writer.add_attachment(0, 0, "recording.log", "text/plain", b"not json")
         writer.finish()
     with path.open("rb") as stream:
@@ -383,28 +442,66 @@ class CountingFakeDecoder:
         return np.full((2, 2, 3), packet, dtype=np.uint8)
 
 
-def _write_synthetic_mcap(path: Path, camera_offsets_ns: dict[str, int], packets: int, states: int, fps: int = 30):
+def _write_synthetic_mcap(
+    path: Path,
+    camera_offsets_ns: dict[str, int],
+    packets: int,
+    states: int,
+    fps: int = 30,
+):
     from mcap_ros2.writer import Writer
 
     period = 1_000_000_000 // fps
     base = 1_000_000_000_000  # keep every log time positive despite negative camera offsets
     with path.open("wb") as stream:
         writer = Writer(stream)
-        video = writer.register_msgdef("foxglove_msgs/msg/CompressedVideo", VIDEO_MSGDEF)
+        video = writer.register_msgdef(
+            "foxglove_msgs/msg/CompressedVideo", VIDEO_MSGDEF
+        )
         state = writer.register_msgdef("robot_states/Data", STATE_MSGDEF)
         action = writer.register_msgdef("robot_actions/Data", ACTION_MSGDEF)
         for index in range(states):
-            row = {"frame_index": index, "episode_index": 0, "index": index, "task_index": 0}
+            row = {
+                "frame_index": index,
+                "episode_index": 0,
+                "index": index,
+                "task_index": 0,
+            }
             log_time = base + index * period
-            writer.write_message("robot/states/data", state, {"observation_state": [float(index), 0.5], **row}, log_time=log_time, publish_time=log_time, sequence=index)
-            writer.write_message("robot/actions/data", action, {"action": [float(index) + 2], **row}, log_time=log_time + 1_000, publish_time=log_time, sequence=index)
+            writer.write_message(
+                "robot/states/data",
+                state,
+                {"observation_state": [float(index), 0.5], **row},
+                log_time=log_time,
+                publish_time=log_time,
+                sequence=index,
+            )
+            writer.write_message(
+                "robot/actions/data",
+                action,
+                {"action": [float(index) + 2], **row},
+                log_time=log_time + 1_000,
+                publish_time=log_time,
+                sequence=index,
+            )
         for camera, offset in camera_offsets_ns.items():
             for packet in range(packets):
                 log_time = base + packet * period + offset
                 writer.write_message(
-                    f"observation/images/{camera}/video", video,
-                    {"timestamp": {"sec": log_time // 1_000_000_000, "nanosec": log_time % 1_000_000_000}, "frame_id": camera, "data": bytes([packet]), "format": "fake"},
-                    log_time=log_time, publish_time=log_time, sequence=packet,
+                    f"observation/images/{camera}/video",
+                    video,
+                    {
+                        "timestamp": {
+                            "sec": log_time // 1_000_000_000,
+                            "nanosec": log_time % 1_000_000_000,
+                        },
+                        "frame_id": camera,
+                        "data": bytes([packet]),
+                        "format": "fake",
+                    },
+                    log_time=log_time,
+                    publish_time=log_time,
+                    sequence=packet,
                 )
         writer.finish()
 
@@ -413,13 +510,20 @@ def test_two_pass_reader_decodes_only_the_packets_the_plan_needs(tmp_path):
     pytest.importorskip("mcap_ros2")
     path = tmp_path / "episode_000.mcap"
     # Head runs 5 ms early, wrist 12 ms late; both still inside 1.5 frames at 30 fps.
-    _write_synthetic_mcap(path, {"head": -5_000_000, "wrist": 12_000_000}, packets=12, states=10)
+    _write_synthetic_mcap(
+        path, {"head": -5_000_000, "wrist": 12_000_000}, packets=12, states=10
+    )
     CountingFakeDecoder.calls = []
-    reader = McapEpisodeReader(ConverterConfig(), video_decoder_factory=CountingFakeDecoder)
+    reader = McapEpisodeReader(
+        ConverterConfig(), video_decoder_factory=CountingFakeDecoder
+    )
 
     episode = reader.read(path)
     assert len(episode.states) == 10 and len(episode.actions) == 10
-    assert sorted(episode.videos) == ["observation.images.head", "observation.images.wrist"]
+    assert sorted(episode.videos) == [
+        "observation.images.head",
+        "observation.images.wrist",
+    ]
     assert len(episode.videos["observation.images.head"]) == 12
     assert episode.videos["observation.images.head"].shape == (2, 2, 3)
     assert episode.states[3].task_index == 0
@@ -434,8 +538,14 @@ def test_two_pass_reader_decodes_only_the_packets_the_plan_needs(tmp_path):
     frames = list(reader.iter_frames(episode, plan.video_index))
     assert len(frames) == 10
     for position, images in enumerate(frames):
-        assert images["observation.images.head"][0, 0, 0] == plan.video_index["observation.images.head"][position]
-        assert images["observation.images.wrist"][0, 0, 0] == plan.video_index["observation.images.wrist"][position]
+        assert (
+            images["observation.images.head"][0, 0, 0]
+            == plan.video_index["observation.images.head"][position]
+        )
+        assert (
+            images["observation.images.wrist"][0, 0, 0]
+            == plan.video_index["observation.images.wrist"][position]
+        )
     # Pass two decoded each needed packet once; packets 10 and 11 were never touched.
     assert len(CountingFakeDecoder.calls) == 20
     assert max(packet for _, packet in CountingFakeDecoder.calls) == 9
@@ -445,7 +555,9 @@ def test_two_pass_reader_shares_a_packet_between_states_without_redecoding(tmp_p
     pytest.importorskip("mcap_ros2")
     path = tmp_path / "episode_000.mcap"
     _write_synthetic_mcap(path, {"head": 0}, packets=10, states=10)
-    reader = McapEpisodeReader(ConverterConfig(), video_decoder_factory=CountingFakeDecoder)
+    reader = McapEpisodeReader(
+        ConverterConfig(), video_decoder_factory=CountingFakeDecoder
+    )
     episode = reader.read(path)
     # Two neighbouring states pointed at the same packet, as a stalled camera would do.
     index = np.array([0, 1, 2, 3, 3, 5, 6, 7, 8, 9])
@@ -459,7 +571,181 @@ def test_two_pass_reader_reports_a_camera_that_runs_out(tmp_path):
     pytest.importorskip("mcap_ros2")
     path = tmp_path / "episode_000.mcap"
     _write_synthetic_mcap(path, {"head": 0}, packets=10, states=10)
-    reader = McapEpisodeReader(ConverterConfig(), video_decoder_factory=CountingFakeDecoder)
+    reader = McapEpisodeReader(
+        ConverterConfig(), video_decoder_factory=CountingFakeDecoder
+    )
     episode = reader.read(path)
     with pytest.raises(ValueError, match="ran out"):
-        list(reader.iter_frames(episode, {"observation.images.head": np.arange(10) + 3}))
+        list(
+            reader.iter_frames(episode, {"observation.images.head": np.arange(10) + 3})
+        )
+
+
+# -- DAS-Ego Foxglove Protobuf profile ---------------------------------------
+
+
+def _protobuf_classes():
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+    field = descriptor_pb2.FieldDescriptorProto
+    proto = descriptor_pb2.FileDescriptorProto(
+        name="das_ego_test.proto", package="foxglove", syntax="proto3"
+    )
+    vector = proto.message_type.add(name="Vector3")
+    for number, name in enumerate(("x", "y", "z"), 1):
+        vector.field.add(
+            name=name, number=number, label=field.LABEL_OPTIONAL, type=field.TYPE_DOUBLE
+        )
+    image = proto.message_type.add(name="CompressedImage")
+    image.field.add(
+        name="data", number=1, label=field.LABEL_OPTIONAL, type=field.TYPE_BYTES
+    )
+    image.field.add(
+        name="format", number=2, label=field.LABEL_OPTIONAL, type=field.TYPE_STRING
+    )
+    imu = proto.message_type.add(name="IMUMeasurement")
+    for number, name in enumerate(("angular_velocity", "linear_acceleration"), 1):
+        imu.field.add(
+            name=name,
+            number=number,
+            label=field.LABEL_OPTIONAL,
+            type=field.TYPE_MESSAGE,
+            type_name=".foxglove.Vector3",
+        )
+    descriptor_set = descriptor_pb2.FileDescriptorSet()
+    descriptor_set.file.append(proto)
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(proto)
+    return (
+        descriptor_set.SerializeToString(),
+        message_factory.GetMessageClass(
+            pool.FindMessageTypeByName("foxglove.CompressedImage")
+        ),
+        message_factory.GetMessageClass(
+            pool.FindMessageTypeByName("foxglove.IMUMeasurement")
+        ),
+    )
+
+
+def _write_das_ego_mcap(path: Path) -> None:
+    from mcap.writer import Writer
+
+    schema_data, image_cls, imu_cls = _protobuf_classes()
+    base = 1_700_000_000_000_000_000
+    period = 1_000_000_000 // 30
+    with path.open("wb") as stream:
+        writer = Writer(stream)
+        writer.start()
+        image_schema = writer.register_schema(
+            "foxglove.CompressedImage", "protobuf", schema_data
+        )
+        imu_schema = writer.register_schema(
+            "foxglove.IMUMeasurement", "protobuf", schema_data
+        )
+        cameras = [
+            writer.register_channel(
+                f"/robot0/sensor/camera{i}/compressed", "protobuf", image_schema
+            )
+            for i in range(6)
+        ]
+        imu_channel = writer.register_channel(
+            "/robot0/sensor/imu", "protobuf", imu_schema
+        )
+        for channel, offset in zip(cameras, range(0, 600_000, 100_000)):
+            for packet in range(5):
+                timestamp = base + packet * period + offset
+                payload = image_cls(data=bytes([packet]), format="fake")
+                writer.add_message(
+                    channel, timestamp, payload.SerializeToString(), timestamp, packet
+                )
+        for index in range(30):
+            timestamp = base + index * 5_000_000
+            payload = imu_cls()
+            for start, vector in (
+                (0, payload.angular_velocity),
+                (3, payload.linear_acceleration),
+            ):
+                vector.x, vector.y, vector.z = (
+                    index + start,
+                    index + start + 1,
+                    index + start + 2,
+                )
+            writer.add_message(
+                imu_channel, timestamp, payload.SerializeToString(), timestamp, index
+            )
+        writer.finish()
+
+
+def test_das_ego_profile_grid_sync_and_observation_only_conversion(tmp_path):
+    pytest.importorskip("mcap_protobuf")
+    path = tmp_path / "das_ego.mcap"
+    _write_das_ego_mcap(path)
+    assert detect_mcap_profile(path) == "das-ego"
+
+    config = ConverterConfig(profile="das-ego")
+    reader = DasEgoEpisodeReader(config, video_decoder_factory=CountingFakeDecoder)
+    episode = reader.read(path)
+    assert episode.timeline_ns.tolist() == [
+        1_700_000_000_033_833_333,
+        1_700_000_000_067_166_666,
+        1_700_000_000_100_499_999,
+    ]
+    assert all(len(video) == 4 for video in episode.videos.values())
+
+    features = build_features(episode)
+    assert "action" not in features and "observation.state" not in features
+    assert features[DAS_EGO_IMU_FEATURE]["shape"] == (6,)
+    assert features["observation.source_timestamp"] == {
+        "dtype": "int64",
+        "shape": (1,),
+        "names": None,
+    }
+    assert set(DAS_EGO_CAMERA_FEATURES).issubset(features)
+
+    plan = plan_pairing(episode, 30, 1.5)
+    assert plan.action_index is None
+    for name, video in episode.videos.items():
+        gaps = np.abs(video.timestamps_ns[plan.video_index[name]] - episode.timeline_ns)
+        assert int(gaps.max()) <= 500_000
+    imu_times = np.asarray(
+        [sample.timestamp_ns for sample in episode.observations[DAS_EGO_IMU_FEATURE]]
+    )
+    imu_gaps = np.abs(
+        imu_times[plan.observation_index[DAS_EGO_IMU_FEATURE]] - episode.timeline_ns
+    )
+    assert int(imu_gaps.max()) <= 2_500_000
+
+    # A selected stream may begin after logical packet zero. Stateful H.264
+    # decoding must still consume the preceding valid packet as codec warm-up.
+    CountingFakeDecoder.calls = []
+    warm_plan = {
+        name: np.asarray([1, 2, 2], dtype=np.int64) for name in episode.videos
+    }
+    warm_frames = list(reader.iter_frames(episode, warm_plan))
+    assert len(warm_frames) == 3
+    assert all(warm_frames[0][name][0, 0, 0] == 2 for name in warm_plan)
+    assert all(warm_frames[1][name][0, 0, 0] == 3 for name in warm_plan)
+    assert all(warm_frames[2][name][0, 0, 0] == 3 for name in warm_plan)
+    assert len(CountingFakeDecoder.calls) == 18
+    assert all(packet in {1, 2, 3} for _, packet in CountingFakeDecoder.calls)
+
+    created = []
+
+    def dataset_factory(**kwargs):
+        dataset = FakeDataset(kwargs)
+        created.append(dataset)
+        return dataset
+
+    McapToLeRobotConverter(
+        [path], tmp_path / "output", "local/das-ego", config, reader, dataset_factory
+    ).convert()
+    dataset = created[0]
+    assert dataset.kwargs["fps"] == 30
+    assert dataset.kwargs["robot_type"] == DAS_EGO_ROBOT_TYPE
+    assert dataset.kwargs["streaming_encoding"] is True
+    assert len(dataset.episodes[0]) == 3
+    frame = dataset.episodes[0][0]
+    assert frame["task"] == DAS_EGO_TASK
+    assert "action" not in frame and "observation.state" not in frame
+    assert frame[DAS_EGO_IMU_FEATURE].dtype == np.float32
+    assert frame["observation.source_timestamp"].tolist() == [episode.timeline_ns[0]]

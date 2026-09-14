@@ -81,6 +81,11 @@ class EpisodeData:
     """Raw source metadata a dialect wants to carry past the converter, e.g. the
     ``xtac`` dialect's per-episode ``episode`` / ``xense_train_mcap`` MCAP
     metadata records used to write the extra ``meta/*.json`` files."""
+    profile: str = "ros2"
+    timeline_ns: np.ndarray | None = None
+    """Explicit output timeline. ROS2 inputs use the state timestamps instead."""
+    observations: dict[str, list[TimedArray]] = field(default_factory=dict)
+    """Additional profile observations, such as DAS IMU samples."""
 
 
 def get_message_field(message: Any, field_name: str) -> Any:
@@ -103,7 +108,9 @@ def optional_int_field(message: Any, field_name: str) -> int | None:
 def as_vector(value: Any, field_name: str) -> np.ndarray:
     result = np.asarray(value)
     if result.ndim != 1:
-        raise ValueError(f"Field {field_name!r} must be one-dimensional, got {result.shape}")
+        raise ValueError(
+            f"Field {field_name!r} must be one-dimensional, got {result.shape}"
+        )
     if not np.issubdtype(result.dtype, np.number):
         raise ValueError(f"Field {field_name!r} must be numeric, got {result.dtype}")
     return np.ascontiguousarray(result)
@@ -121,7 +128,9 @@ def as_bytes(value: Any) -> bytes:
     return bytes(value)
 
 
-def read_lerobot_attachments(reader: Any) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def read_lerobot_attachments(
+    reader: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Return ``(info, episode_meta)`` from the attachments lerobot2mcap writes.
 
     Either is ``None`` when the MCAP does not carry it, which is what an MCAP
@@ -141,7 +150,9 @@ def _parse_json_attachment(attachment: Any) -> dict[str, Any]:
     try:
         parsed = json.loads(bytes(attachment.data).decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
-        raise ValueError(f"Attachment {attachment.name!r} is not valid JSON: {error}") from error
+        raise ValueError(
+            f"Attachment {attachment.name!r} is not valid JSON: {error}"
+        ) from error
     if not isinstance(parsed, dict):
         raise ValueError(f"Attachment {attachment.name!r} must hold a JSON object")
     return parsed
@@ -303,11 +314,17 @@ class McapEpisodeReader:
                     f"got shape {index.shape}"
                 )
             if np.any(np.diff(index) < 0):
-                raise ValueError(f"{feature_name}: packet numbers must be non-decreasing")
+                raise ValueError(
+                    f"{feature_name}: packet numbers must be non-decreasing"
+                )
             wanted[feature_name] = index
-        needed = {feature_name: set(index.tolist()) for feature_name, index in wanted.items()}
+        needed = {
+            feature_name: set(index.tolist()) for feature_name, index in wanted.items()
+        }
 
-        decoded: dict[str, dict[int, np.ndarray]] = {feature_name: {} for feature_name in features}
+        decoded: dict[str, dict[int, np.ndarray]] = {
+            feature_name: {} for feature_name in features
+        }
         seen = dict.fromkeys(features, 0)
         decoders: dict[str, Any] = {}
         emitted = 0
@@ -318,7 +335,9 @@ class McapEpisodeReader:
             decode = _MessageDecoder(DecoderFactory())
             # Same iteration order as pass one, so packet k here is packet k there.
             for schema, channel, message in reader.iter_messages(log_time_order=True):
-                feature_name = self.config.video_feature_name(normalize_topic(channel.topic))
+                feature_name = self.config.video_feature_name(
+                    normalize_topic(channel.topic)
+                )
                 if feature_name is None or feature_name not in needed:
                     continue
                 packet = seen[feature_name]
@@ -340,7 +359,10 @@ class McapEpisodeReader:
                 while emitted < total and all(
                     int(wanted[name][emitted]) in decoded[name] for name in features
                 ):
-                    yield {name: decoded[name][int(wanted[name][emitted])] for name in features}
+                    yield {
+                        name: decoded[name][int(wanted[name][emitted])]
+                        for name in features
+                    }
                     emitted += 1
                     if emitted == total:
                         break
@@ -368,14 +390,22 @@ class McapEpisodeReader:
             raise ValueError(
                 f"{episode.source} contains no messages on {self.config.action_topic!r}"
             )
-        self._validate_monotonic("state", [item.timestamp_ns for item in episode.states], episode.source)
-        self._validate_monotonic("action", [item.timestamp_ns for item in episode.actions], episode.source)
+        self._validate_monotonic(
+            "state", [item.timestamp_ns for item in episode.states], episode.source
+        )
+        self._validate_monotonic(
+            "action", [item.timestamp_ns for item in episode.actions], episode.source
+        )
         for feature_name, index in episode.videos.items():
-            self._validate_monotonic(feature_name, index.timestamps_ns.tolist(), episode.source)
+            self._validate_monotonic(
+                feature_name, index.timestamps_ns.tolist(), episode.source
+            )
 
     @staticmethod
     def _validate_monotonic(name: str, timestamps: list[int], source: Path) -> None:
-        if any(current < previous for previous, current in zip(timestamps, timestamps[1:])):
+        if any(
+            current < previous for previous, current in zip(timestamps, timestamps[1:])
+        ):
             raise ValueError(f"{source}: {name} timestamps are not monotonic")
 
 

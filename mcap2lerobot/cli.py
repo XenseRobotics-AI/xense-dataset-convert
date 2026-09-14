@@ -20,7 +20,7 @@ from .converter import McapToLeRobotConverter
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mcap2lerobot",
-        description="Convert MCAP episode files into a LeRobot v3 dataset",
+        description="Convert XTac, ROS2, or DAS MCAP files into a LeRobot v3 dataset",
     )
     parser.add_argument("inputs", nargs="+", help="MCAP files or directories")
     parser.add_argument("-o", "--output", required=True, help="New dataset directory")
@@ -64,6 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
     roundtrip.add_argument("--state-field", default="observation_state")
     roundtrip.add_argument("--action-field", default="action")
     parser.add_argument(
+        "--profile",
+        choices=("auto", "ros2", "das-ego"),
+        default="auto",
+        help="Input layout (default: auto-detect ROS2 or DAS-Ego Protobuf)",
+    )
+    parser.add_argument(
         "--max-sync-gap-frames",
         type=float,
         default=1.5,
@@ -90,6 +96,7 @@ def main() -> int:
         max_sync_gap_frames=args.max_sync_gap_frames,
         task=args.task,
         robot_type=args.robot_type,
+        profile=args.profile,
     )
     converter = McapToLeRobotConverter(
         inputs=[Path(value) for value in args.inputs],

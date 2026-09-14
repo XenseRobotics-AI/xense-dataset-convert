@@ -1,8 +1,9 @@
 # mcap2lerobot
 
-Convert MCAP episode files into a LeRobot v3.0 dataset.
-
-Two source layouts (dialects) are supported, chosen with `--dialect`:
+Convert XTacData, ROS2 round-trip, or DAS-Ego MCAP episodes into a LeRobot
+v3.0 dataset. DAS profiles are detected before the dialect fallback; non-DAS
+inputs use `--dialect` (`xtac` by default or `lerobot_roundtrip`). The converter
+does not attempt to support arbitrary ROS topic layouts.
 
 | Dialect | Source | Default |
 | --- | --- | --- |
@@ -66,6 +67,18 @@ to each state timestamp using nearest-neighbor synchronization with a bounded
 maximum gap. The pairing is decided before anything is written, so an episode
 that is out of sync fails without leaving a half-written dataset.
 
+The DAS-Ego profile recognizes six Protobuf `foxglove.CompressedImage` topics
+(`/robot0/sensor/camera0/compressed` through `camera5`) plus
+`/robot0/sensor/imu` (`foxglove.IMUMeasurement`). It drops each camera's invalid
+first H.264 packet, builds an integer 30 Hz grid over the common camera range,
+and pairs camera and IMU samples by nearest timestamp. Its output has
+`observation.images.camera0` through `camera5`, a six-value float32
+`observation.imu`, and an int64 `observation.source_timestamp`; it deliberately
+has no `action` or fabricated gripper state. Audio, calibration, and system
+status topics are not copied because LeRobot v3 has no corresponding standard
+features. DAS-Ego videos use LeRobot's streaming H.264 encoder and are decoded
+after finalization to verify frame counts and resolution.
+
 Reading is done in two passes so memory does not grow with episode length: the
 first pass keeps the state and action vectors plus each camera's packet
 timestamps, the second decodes only the packets the pairing needs and hands
@@ -107,7 +120,13 @@ Convert selected files:
 mcap2lerobot episode_000.mcap episode_001.mcap -o ./converted_dataset
 ```
 
-Convert `lerobot2mcap` round-trip output instead:
+Auto-detect or explicitly select DAS-Ego:
+
+```bash
+mcap2lerobot recording.mcap -o ./converted_dataset --profile das-ego --fps 30
+```
+
+Convert `lerobot2mcap` round-trip output and optionally override its topics:
 
 ```bash
 mcap2lerobot ./mcap_output -o ./converted_dataset \
@@ -122,8 +141,9 @@ Run `mcap2lerobot --help` for all options.
 
 ## Current limitations
 
-- Two source layouts are supported (`--dialect`): `xtac` (JSON + protobuf) and
-  `lerobot_roundtrip` (ROS2 CDR). Other topic layouts are not.
+- Supported source layouts are XTacData (`--dialect xtac`), ROS2 round-trip
+  (`--dialect lerobot_roundtrip`), and the auto-detected DAS-Ego Protobuf profile.
+  Other topic layouts are not supported.
 - One MCAP file must represent exactly one episode.
 - State and action features are one-dimensional numeric arrays.
 - For MCAP files without the `meta/info.json` / `meta/episode.json`

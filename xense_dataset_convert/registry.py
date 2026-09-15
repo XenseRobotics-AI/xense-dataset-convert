@@ -39,6 +39,7 @@ _ADAPTERS: dict[tuple[Format, Format], str] = {
     (Format.LEROBOT, Format.ZARR): "xense_dataset_convert.adapters.lerobot_to_zarr",
     (Format.MCAP, Format.LEROBOT): "xense_dataset_convert.adapters.mcap_to_lerobot",
     (Format.UMI_HDF5, Format.LEROBOT): "xense_dataset_convert.adapters.umi_hdf5_to_lerobot",
+    (Format.RLDS, Format.LEROBOT): "xense_dataset_convert.adapters.rlds_to_lerobot",
 }
 
 

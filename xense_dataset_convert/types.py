@@ -31,6 +31,9 @@ class Format(Enum):
     UMI_HDF5 = "umi_hdf5"
     """The raw per-stream HDF5/MKV recordings written by the UMI rig."""
 
+    RLDS = "rlds"
+    """A generated RLDS/TFDS dataset, such as DROID."""
+
     def __str__(self) -> str:
         return self.value
 

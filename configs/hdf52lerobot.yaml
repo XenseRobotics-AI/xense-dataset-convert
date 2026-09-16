@@ -24,26 +24,6 @@ pair: index
 max_sync_gap_frames: 3.0
 warn_sync_gap_frames: 1.5
 
-# The recorder writes the Vive tracker's pose under `{side}_tcp`, not a TCP --
-# the raw `*_tracker_LHR-*.hdf5` reproduces bit-for-bit without these two. The
-# world rotation is exact; the tracker->EEF numbers are PROVISIONAL (no CAD, no
-# hardware to measure) -- see hdf52lerobot/ee_transform.py for what the pose
-# data does and does not support, and set `measured: true` once they are real.
-world_frame: vive_to_xense
-pose_transforms:
-  left_tcp:
-    approach: "+z"      # measured from the data: the only axis that is ever near-vertical
-    distance: 0.22      # PROVISIONAL, pivot fits bound it to roughly 0.18-0.24 m
-    lateral: [0.0, 0.0]
-    spin: 0.0           # PROVISIONAL, and unobservable in pose data -- 0 or 90
-    measured: false
-  right_tcp:
-    approach: "+z"
-    distance: 0.22
-    lateral: [0.0, 0.0]
-    spin: 0.0
-    measured: false
-
 master_clock: left_tcp
 state_layout:
   - left_tcp

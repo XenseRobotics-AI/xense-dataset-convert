@@ -13,8 +13,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from .ee_transform import WORLD_FRAMES, TrackerToEef
-from .geometry import QUAT_ORDERS
 from .imaging import CHANNEL_ORDER, validate_transforms
 
 VIDEO = "video"
@@ -22,6 +20,7 @@ POSE = "pose"
 GRIPPER = "gripper"
 KINDS = (VIDEO, POSE, GRIPPER)
 
+QUAT_ORDERS = ("wxyz", "xyzw")
 PAIR_MODES = ("index", "nearest", "grid")
 
 # Field suffixes contributed to observation.state by each stream kind.
@@ -231,22 +230,6 @@ class ConverterConfig:
     data_files_size_in_mb: int = 100
     video_files_size_in_mb: int = 200
 
-    world_frame: str = "none"
-    """Which world frame the recorded poses are re-expressed in.
-
-    ``none`` writes them as recorded. ``vive_to_xense`` converts SteamVR's Y-up
-    world to X forward / Y left / Z up -- correct for any rig whose poses come
-    straight off a Vive tracker, wrong for one whose recorder already did it
-    (TacCap). Off by default so an existing profile keeps behaving exactly as it
-    did; the RDT profile turns it on."""
-
-    pose_transforms: dict[str, TrackerToEef] = field(default_factory=dict)
-    """Per pose-stream ``^Tracker T_EE``, keyed by stream key (``left_tcp``).
-
-    A stream with no entry is written as recorded, which is right only when the
-    recorder already placed the frame where the name claims. See
-    :mod:`hdf52lerobot.ee_transform`."""
-
     codebase_version: str = "v3.0"
     tolerance_s: float = 1e-4
 
@@ -265,15 +248,6 @@ class ConverterConfig:
             raise ValueError("warn_sync_gap_frames must be positive")
         if self.gop <= 0:
             raise ValueError("gop must be positive")
-        if self.world_frame not in WORLD_FRAMES:
-            raise ValueError(
-                f"world_frame must be one of {sorted(WORLD_FRAMES)}, got {self.world_frame!r}"
-            )
-        unknown = set(self.pose_transforms) - set(self.state_layout)
-        if unknown:
-            raise ValueError(
-                f"pose_transforms names {sorted(unknown)}, which state_layout does not contain"
-            )
         if self.codec_threads < 0:
             raise ValueError("codec_threads must be 0 (auto) or positive")
         if self.rgb_bias_frames <= 0:
@@ -322,14 +296,6 @@ class ConverterConfig:
             options.update({"crf": str(self.crf), "keyint_min": str(self.gop)})
         options.update({key: str(value) for key, value in self.video_options.items()})
         return options
-
-    def world_matrix(self) -> Any:
-        """The world rotation to apply, or None for ``world_frame: none``."""
-        return WORLD_FRAMES[self.world_frame]
-
-    def pose_transform_for(self, key: str) -> TrackerToEef:
-        """This stream's tracker -> EEF transform; identity when unconfigured."""
-        return self.pose_transforms.get(key, TrackerToEef())
 
     def task_for(self, episode_name: str) -> str:
         """The task text for one recording directory."""
@@ -386,11 +352,6 @@ class ConverterConfig:
         if "video_options" in raw and raw["video_options"] is not None:
             raw["video_options"] = {
                 str(key): str(value) for key, value in dict(raw["video_options"]).items()
-            }
-        if "pose_transforms" in raw and raw["pose_transforms"] is not None:
-            raw["pose_transforms"] = {
-                str(key): TrackerToEef.from_mapping(dict(value))
-                for key, value in dict(raw["pose_transforms"]).items()
             }
         if "tasks" in raw and raw["tasks"] is not None:
             raw["tasks"] = {str(key): str(value) for key, value in dict(raw["tasks"]).items()}

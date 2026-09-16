@@ -15,7 +15,8 @@ import numpy as np
 
 from .config import ConverterConfig
 from .features import SOURCE_TIMESTAMP, build_features, video_features
-from .geometry import quaternions_to_rotation_6d, to_wxyz
+from .ee_transform import transform_pose_block
+from .geometry import to_wxyz
 from .logger import get_logger
 from .source import SourceEpisode, read_episode
 from .stats import StatsAccumulator, downsample_hwc, sample_positions
@@ -52,6 +53,35 @@ def discover_episodes(inputs: Sequence[str | Path]) -> list[Path]:
     return unique
 
 
+def warn_untransformed_poses(config: ConverterConfig, logger: Any) -> None:
+    """Say so when an RDT conversion is about to write raw tracker poses.
+
+    `bi_rdt_gripper` recordings carry the Vive tracker's pose under a key named
+    `{side}_tcp`. Converting them with no `pose_transforms` is what produced
+    every dataset of this rig so far, and it is silent -- the column names look
+    right either way.
+    """
+    if config.robot_type != "bi_rdt_gripper":
+        return
+    missing = [
+        key
+        for key in config.state_layout
+        if key.endswith("_tcp") and config.pose_transform_for(key).is_identity
+    ]
+    if missing:
+        logger.warn(
+            f"{', '.join(missing)}: no pose_transforms entry, so the Vive tracker's own pose "
+            f"is being written under a name that claims to be a TCP. See "
+            f"hdf52lerobot/ee_transform.py."
+        )
+    elif not all(config.pose_transform_for(key).measured for key in config.state_layout
+                 if key.endswith("_tcp")):
+        logger.warn(
+            "tracker->EEF offsets are marked provisional (measured: false); poses are placed "
+            "at roughly the right scale but not to the millimetre."
+        )
+
+
 def build_state(episode: SourceEpisode, sync: SyncReport, config: ConverterConfig) -> np.ndarray:
     """Concatenate the configured streams into the ``observation.state`` matrix."""
     blocks: list[np.ndarray] = []
@@ -59,8 +89,15 @@ def build_state(episode: SourceEpisode, sync: SyncReport, config: ConverterConfi
         indices = sync.indices_for(key)
         if key in episode.poses:
             values = episode.poses[key].values[indices]
-            rotations = quaternions_to_rotation_6d(to_wxyz(values[:, 3:7], config.quat_order))
-            blocks.append(np.concatenate([values[:, :3], rotations], axis=1))
+            # The recorded frame is the tracker's, not the TCP the name claims;
+            # ee_transform puts it where the name says and fixes the world.
+            positions, rotations = transform_pose_block(
+                values[:, :3],
+                to_wxyz(values[:, 3:7], config.quat_order),
+                config.pose_transform_for(key),
+                config.world_matrix(),
+            )
+            blocks.append(np.concatenate([positions, rotations], axis=1))
         elif key in episode.grippers:
             blocks.append(episode.grippers[key].normalized()[indices][:, None])
         else:
@@ -111,6 +148,9 @@ class Hdf5ToLeRobotConverter:
     def convert(self) -> Path:
         episode_paths = discover_episodes(self.inputs)
         logger.info(f"Converting {len(episode_paths)} episode(s) -> {self.output_root}")
+        warn_untransformed_poses(self.config, logger)
+        if self.config.world_frame != "none":
+            logger.info(f"World frame: {self.config.world_frame}")
 
         if self.output_root.exists():
             if not self.overwrite:

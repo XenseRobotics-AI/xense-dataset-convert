@@ -8,7 +8,7 @@ files, and ``meta/episodes`` records where each episode lives.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +155,13 @@ class DatasetWriter:
         if self._buffer_rows * row_bytes < limit:
             return
         self._flush_data()
+        self._advance_data_file()
+
+    def _data_file_path(self, chunk_index: int, file_index: int) -> Path:
+        return self.root / DATA_PATH.format(chunk_index=chunk_index, file_index=file_index)
+
+    def _advance_data_file(self) -> None:
+        """Move to the next data file, carrying into the next chunk when full."""
         self._data_file_index += 1
         if self._data_file_index >= self.config.chunks_size:
             self._data_file_index = 0
@@ -204,6 +211,52 @@ class DatasetWriter:
 
         self._buffer.clear()
         self._buffer_rows = 0
+
+    # -- checkpointing -------------------------------------------------------
+
+    def flush(self) -> None:
+        """Write any buffered rows out, so disk and :meth:`state` agree."""
+        self._flush_data()
+
+    def state(self) -> dict[str, Any]:
+        """Everything needed to carry on writing where this left off.
+
+        Called with the buffer already flushed, so the parquet on disk and this
+        state describe the same set of episodes.
+        """
+        return {
+            "data_chunk_index": self._data_chunk_index,
+            "data_file_index": self._data_file_index,
+            "total_frames": self._total_frames,
+            "tasks": list(self._tasks),
+            "episodes": [asdict(record) for record in self._episodes],
+        }
+
+    def restore(self, state: dict[str, Any]) -> None:
+        """Adopt a :meth:`state` from an interrupted run."""
+        if self._episodes or self._buffer:
+            raise ValueError("restore must come before anything is written")
+        self._data_chunk_index = int(state["data_chunk_index"])
+        self._data_file_index = int(state["data_file_index"])
+        self._total_frames = int(state["total_frames"])
+        self._tasks = list(state["tasks"])
+        # The file the interrupted run flushed to is complete; writing to it
+        # again would replace its rows rather than add to them, losing every
+        # episode the checkpoint says is already there.
+        if self._data_file_path(self._data_chunk_index, self._data_file_index).exists():
+            self._advance_data_file()
+        self._episodes = [
+            EpisodeRecord(
+                **{
+                    **record,
+                    "videos": {
+                        key: VideoPlacement(**placement)
+                        for key, placement in record["videos"].items()
+                    },
+                }
+            )
+            for record in state["episodes"]
+        ]
 
     # -- finalize ------------------------------------------------------------
 

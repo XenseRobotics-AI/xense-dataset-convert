@@ -199,8 +199,9 @@ python tools/rdt_progress.py --output /archive/lerobot/TacVerse/raw   # watch it
 
 Twelve jobs convert about 22 hours of recording per hour on a 32-core machine
 with an NVENC-capable GPU, so the 1245 hours that can be filed by task take
-about two days. Converting is resumable: a dataset with `meta/info.json` is
-left alone, one without is redone from scratch, and a lock file keeps two
+about two days. Converting is resumable twice over: a dataset with `meta/info.json` is left
+alone, and a run stopped with Ctrl-C leaves a checkpoint the next run continues
+from, to a result identical to never having stopped. A lock file keeps two
 drivers off the same output tree.
 
 ### What the profile does to this rig's data

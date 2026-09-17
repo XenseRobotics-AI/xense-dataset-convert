@@ -20,7 +20,10 @@ summary: the schedule says the session covered two or three tasks but not
 which recording is which, so those episodes cannot be filed by task until the
 capture team supplies a per-episode list. `--list` reports how many that is.
 
-Converting is resumable: a dataset whose `meta/info.json` already exists is
+Converting is resumable twice over. A run stopped with Ctrl-C finishes the
+episode it is on, writes `meta/.checkpoint.json` and exits; running it again
+carries on from there, and the result is identical to never having stopped. A
+dataset whose `meta/info.json` already exists is
 left alone unless `--overwrite` is given, and one whose directory exists
 *without* that file is a run that was interrupted, so it is converted again
 from scratch. Only one driver may work on an output tree at a time -- a second
@@ -135,21 +138,35 @@ def convert_group(group: Group, output_root: Path, config_path: Path, workers: i
     finished = (destination / "meta" / "info.json").exists()
     if finished and not overwrite:
         return {"dataset": group.name, "status": "skipped", "reason": "already converted"}
-    # A directory without info.json is what an interrupted run leaves behind;
-    # it has to be replaced, not preserved, or the converter refuses to write.
-    replace = overwrite or destination.exists()
+    # A directory holding a checkpoint is an interrupted run, and the converter
+    # carries on from it. Anything else without info.json is unusable and gets
+    # replaced -- the converter would otherwise refuse to write into it.
+    from hdf52lerobot.checkpoint import Checkpoint
+
+    resumable = Checkpoint.load(destination) is not None
+    replace = overwrite or (destination.exists() and not resumable)
 
     config = ConverterConfig.from_yaml(config_path).with_overrides(task=group.task, workers=workers)
     started = time.time()
-    Hdf5ToLeRobotConverter(
-        inputs=group.episodes,
-        output_root=destination,
-        config=config,
-        overwrite=replace,
-        # One damaged recording out of thousands should cost that recording,
-        # not the dataset; the skipped ones are listed in meta/sources.json.
-        skip_failed_episodes=True,
-    ).convert()
+    try:
+        Hdf5ToLeRobotConverter(
+            inputs=group.episodes,
+            output_root=destination,
+            config=config,
+            overwrite=replace,
+            # One damaged recording out of thousands should cost that recording,
+            # not the dataset; the skipped ones are listed in meta/sources.json.
+            skip_failed_episodes=True,
+        ).convert()
+    except KeyboardInterrupt as stop:
+        # The checkpoint is already written; say where, and leave the dataset
+        # unfinished rather than pretending either way.
+        return {
+            "dataset": group.name,
+            "status": "interrupted",
+            "detail": str(stop),
+            "seconds": round(time.time() - started, 1),
+        }
     write_hardware(destination, group.episodes, config.robot_type)
 
     info = json.loads((destination / "meta" / "info.json").read_text(encoding="utf-8"))

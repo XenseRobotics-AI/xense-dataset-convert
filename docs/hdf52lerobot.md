@@ -120,6 +120,14 @@ Useful flags: `--config` (rule file, default
   SDK does at sensor init from 2.1.x (`init_rgb_bias`). The shift is measured
   from each recording's opening `rgb_bias_frames` frames — the gel at rest —
   and folded into the same pass as the transforms.
+- **Stopping and resuming**: Ctrl-C finishes the episode in progress, writes
+  `meta/.checkpoint.json` and exits; running the same command again carries on
+  from there, and the result is identical to never having stopped. A second
+  Ctrl-C stops immediately, discarding that episode. Three states an output
+  directory can be in: `meta/info.json` present is finished, a checkpoint
+  without it is resumable, neither is unusable. The checkpoint records the
+  configuration it was written under, so resuming under different settings
+  starts over rather than splicing two datasets together.
 - **Threads**: `--workers` sets how many cameras of one episode are encoded at
   once; `--codec-threads` (default 1) sets how many threads run *inside* each
   encoder and decoder. Left to FFmpeg (`0`), every instance sizes itself to the

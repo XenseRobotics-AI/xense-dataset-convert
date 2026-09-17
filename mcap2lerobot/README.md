@@ -123,3 +123,31 @@ lerobot 一侧不是瓶颈：`add_frame` 把图像交给它的 image writer 异�
 0.3.3 起生效。reader 与 converter 的切换互相依赖，连同测试放在一个提交里，保证每个提交都能通过测试；
 设计文档和发布各自一个提交。若将来需要把读文件从两遍降到一遍，
 再在 B 的基础上做方案 C 的窗口化，第一遍收集时间戳的接口不必改。
+
+## 9. XTac dialect（默认）
+
+`ConverterConfig.dialect` 选择源格式，默认 `xtac`（XTacData），`lerobot_roundtrip`
+保留上文的 ROS2 CDR 往返链路。两者共用 converter 的 `plan_pairing`、`build_features`、
+`_write_episode`；差异全部落在 [`xtac.py`](xtac.py) 的 `XTacMcapReader` 里，它满足与
+`McapEpisodeReader` 相同的两遍契约（`read` 后 `iter_frames`）。
+
+XTac 与往返格式的关键区别，以及对应的处理：
+
+- **混合编码**：`/train/*` 是 JSON，`/camera/*` 是 protobuf（`foxglove.CompressedVideo`）。
+  `_XTacMessageDecoder` 按 `channel.message_encoding` 分派，不再是单一 CDR 工厂。
+- **帧间 h264**：包不可独立解码（首帧要喂两个包，之后 1:1，flush 时出最后一帧）。
+  `SequentialVideoDecoder` 顺序喂包、按产出顺序把第 n 帧配到第 n 个包，`flush()` 用
+  `parse(b"")` 排空流水线延迟。因为 state:包 = 1:1，`iter_frames` 顺序解全部包（跳包对帧间流不安全）。
+- **元数据在 metadata records 而非附件**：`read()` 读 `xense_train_mcap` / `episode` 两条记录，
+  合成出与往返格式同形的 `info` / `episode_meta`（fps、29 维名字、`robot_type`、视频 codec、task_id），
+  于是 converter 的 `resolve_fps` / `build_features` / `frame_task` 无需改动即可复用。
+- **派生特征 tracker_confidence**：从 `/pico/pose` 的 `state.Motion.joints[].confidence` 取（按 sn 对应左右），
+  放进 `EpisodeData.extra_vectors`，由 `plan_pairing` 用与 action 相同的最近邻规则配到每个 state。
+  `extra_vectors` 是通用机制，往返格式为空。
+- **额外 meta 文件**：`convert()` 在 `finalize()` 之后调用 `write_xtac_metadata`，从各集的 `episode`
+  记录复原 `hardware.json`、`xumi_collection_devices.json`、`taccap_extrinsics.json`，并把 tactile 相机的
+  `taccap.rectify_config` 合并进 `meta/info.json`。`tracker_to_ee` 留空——落盘位姿已是 EE/TCP。
+
+参考数据集 `xtac-umi-g1-block-to-box` 属于另一批采集（`source_episode_id` 为 `EP-1788*`、序列号不同），
+只作**结构模板**；本转换器产出的设备序列号来自各自的 mcap。已核对：feature 的 dtype/shape/names、
+data parquet 列、五个 meta json 文件集合、以及三个 provenance 文件与 `rectify_config` 的键结构均与参考一致。

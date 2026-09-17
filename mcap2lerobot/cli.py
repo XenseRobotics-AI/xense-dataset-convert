@@ -6,44 +6,63 @@ import argparse
 import logging
 from pathlib import Path
 
-from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, ConverterConfig
+from .config import (
+    DEFAULT_ROBOT_TYPE,
+    DEFAULT_TASK,
+    DIALECT_LEROBOT_ROUNDTRIP,
+    DIALECT_XTAC,
+    DIALECTS,
+    ConverterConfig,
+)
 from .converter import McapToLeRobotConverter
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mcap2lerobot",
-        description="Convert ROS2 MCAP episode files into a LeRobot v3 dataset",
+        description="Convert MCAP episode files into a LeRobot v3 dataset",
     )
     parser.add_argument("inputs", nargs="+", help="MCAP files or directories")
     parser.add_argument("-o", "--output", required=True, help="New dataset directory")
     parser.add_argument("--repo-id", default=None, help="LeRobot repository ID")
     parser.add_argument(
+        "--dialect",
+        choices=DIALECTS,
+        default=DIALECT_XTAC,
+        help=(
+            f"Source MCAP layout. {DIALECT_XTAC!r} (default): XTacData recordings. "
+            f"{DIALECT_LEROBOT_ROUNDTRIP!r}: the ROS2 CDR layout lerobot2mcap emits."
+        ),
+    )
+    parser.add_argument(
         "--fps",
         type=int,
         default=None,
-        help="Override the fps embedded by lerobot2mcap (else inferred from state timestamps)",
+        help="Override the fps read from the source (else the source's own metadata)",
     )
     parser.add_argument(
         "--task",
         default=None,
         help=(
-            "Task text for every frame. Default: the tasks lerobot2mcap embedded, "
-            f"else {DEFAULT_TASK!r}"
+            "Task text for every frame. Default: the source's own task "
+            f"(the embedded tasks for {DIALECT_LEROBOT_ROUNDTRIP!r}, the task_id for "
+            f"{DIALECT_XTAC!r}), else {DEFAULT_TASK!r}"
         ),
     )
     parser.add_argument(
         "--robot-type",
         default=None,
         help=(
-            "robot_type for meta/info.json. Default: the value lerobot2mcap embedded, "
-            f"else {DEFAULT_ROBOT_TYPE!r}"
+            "robot_type for meta/info.json. Default: the source's own value, "
+            f"else {DEFAULT_ROBOT_TYPE!r} ({DIALECT_LEROBOT_ROUNDTRIP!r}) or "
+            f"'xtac_umi_g1' ({DIALECT_XTAC!r})"
         ),
     )
-    parser.add_argument("--state-topic", default="robot/states/data")
-    parser.add_argument("--action-topic", default="robot/actions/data")
-    parser.add_argument("--state-field", default="observation_state")
-    parser.add_argument("--action-field", default="action")
+    roundtrip = parser.add_argument_group(f"{DIALECT_LEROBOT_ROUNDTRIP!r} dialect topic layout")
+    roundtrip.add_argument("--state-topic", default="robot/states/data")
+    roundtrip.add_argument("--action-topic", default="robot/actions/data")
+    roundtrip.add_argument("--state-field", default="observation_state")
+    roundtrip.add_argument("--action-field", default="action")
     parser.add_argument(
         "--max-sync-gap-frames",
         type=float,
@@ -62,6 +81,7 @@ def main() -> int:
     )
     output = Path(args.output).expanduser().resolve()
     config = ConverterConfig(
+        dialect=args.dialect,
         state_topic=args.state_topic,
         action_topic=args.action_topic,
         state_field=args.state_field,

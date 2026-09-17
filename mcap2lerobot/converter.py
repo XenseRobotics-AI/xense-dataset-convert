@@ -7,13 +7,13 @@ import inspect
 import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
 import numpy as np
 
-from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, ConverterConfig
+from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, DIALECT_XTAC, ConverterConfig
 from .reader import EpisodeData, McapEpisodeReader, TimedArray
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,9 @@ def discover_mcap_files(inputs: Sequence[Path]) -> list[Path]:
     for input_path in inputs:
         path = Path(input_path).expanduser().resolve()
         if path.is_dir():
-            files.extend(path.glob("*.mcap"))
+            # Skip dot-files: a directory copied off macOS carries "._EP*.mcap"
+            # AppleDouble side-cars that match the glob but are not recordings.
+            files.extend(child for child in path.glob("*.mcap") if not child.name.startswith("."))
         elif path.is_file() and path.suffix.lower() == ".mcap":
             files.append(path)
         else:
@@ -92,6 +94,8 @@ class Plan:
     """``(states,)`` index into ``episode.actions``."""
     video_index: dict[str, np.ndarray]
     """Feature -> ``(states,)`` packet number within that camera's stream."""
+    extra_index: dict[str, np.ndarray] = field(default_factory=dict)
+    """Feature -> ``(states,)`` index into that ``episode.extra_vectors`` stream."""
 
 
 def _pair_to_states(source_ns: np.ndarray, state_ns: np.ndarray, max_gap_ns: int, label: str) -> np.ndarray:
@@ -124,6 +128,15 @@ def plan_pairing(episode: EpisodeData, fps: int, max_sync_gap_frames: float) -> 
         video_index={
             feature_name: _pair_to_states(index.timestamps_ns, state_ns, max_gap_ns, feature_name)
             for feature_name, index in episode.videos.items()
+        },
+        extra_index={
+            feature_name: _pair_to_states(
+                np.asarray([item.timestamp_ns for item in samples], dtype=np.int64),
+                state_ns,
+                max_gap_ns,
+                feature_name,
+            )
+            for feature_name, samples in episode.extra_vectors.items()
         },
     )
 
@@ -227,6 +240,8 @@ def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
         "observation.state": _vector_feature(episode, "observation.state", state, "state"),
         "action": _vector_feature(episode, "action", action, "action"),
     }
+    for feature_name, samples in sorted(episode.extra_vectors.items()):
+        features[feature_name] = _vector_feature(episode, feature_name, samples[0].value, feature_name)
     for feature_name, index in sorted(episode.videos.items()):
         shape = tuple(index.shape)
         if len(shape) != 3 or shape[2] not in (1, 3, 4):
@@ -315,8 +330,16 @@ class McapToLeRobotConverter:
         self.output_root = Path(output_root).expanduser().resolve()
         self.repo_id = repo_id
         self.config = config or ConverterConfig()
-        self.reader = reader or McapEpisodeReader(self.config)
+        self.reader = reader or self._default_reader(self.config)
         self.dataset_factory = dataset_factory or self._default_dataset_factory
+
+    @staticmethod
+    def _default_reader(config: ConverterConfig) -> Any:
+        if config.dialect == DIALECT_XTAC:
+            from .xtac import XTacMcapReader
+
+            return XTacMcapReader(config)
+        return McapEpisodeReader(config)
 
     @staticmethod
     def _default_dataset_factory(video_codec: str | None = None, **kwargs: Any) -> DatasetWriter:
@@ -366,11 +389,13 @@ class McapToLeRobotConverter:
             video_codec=video_codec,
         )
 
+        source_metadata: list[dict[str, Any] | None] = [first_episode.source_metadata]
         try:
             self._write_episode(dataset, first_episode, features, fps, first_plan)
             for mcap_path in mcap_files[1:]:
                 episode = self.reader.read(mcap_path)
                 self._write_episode(dataset, episode, features, fps)
+                source_metadata.append(episode.source_metadata)
             dataset.finalize()
         except Exception:
             finalize = getattr(dataset, "finalize", None)
@@ -380,7 +405,18 @@ class McapToLeRobotConverter:
                 except Exception:
                     pass
             raise
+        self._write_dialect_metadata(source_metadata, robot_type)
         return self.output_root
+
+    def _write_dialect_metadata(
+        self, source_metadata: list[dict[str, Any] | None], robot_type: str
+    ) -> None:
+        """Write the XTac provenance files the LeRobot writer does not produce."""
+        if self.config.dialect != DIALECT_XTAC:
+            return
+        from .xtac import write_xtac_metadata
+
+        write_xtac_metadata(self.output_root, source_metadata, robot_type)
 
     def _write_episode(
         self,
@@ -399,6 +435,10 @@ class McapToLeRobotConverter:
 
         state_dtype = np.dtype(expected_features["observation.state"]["dtype"])
         action_dtype = np.dtype(expected_features["action"]["dtype"])
+        extra_dtypes = {
+            feature_name: np.dtype(expected_features[feature_name]["dtype"])
+            for feature_name in episode.extra_vectors
+        }
         total = len(episode.states)
         frames = self.reader.iter_frames(episode, plan.video_index)
         written = 0
@@ -414,6 +454,9 @@ class McapToLeRobotConverter:
                     ),
                     "task": frame_task(self.config, episode, state),
                 }
+                for feature_name, samples in episode.extra_vectors.items():
+                    sample = samples[int(plan.extra_index[feature_name][position])]
+                    frame[feature_name] = np.array(sample.value, dtype=extra_dtypes[feature_name])
                 frame.update(images)
                 dataset.add_frame(frame)
                 written += 1

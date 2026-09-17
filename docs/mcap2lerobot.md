@@ -1,9 +1,9 @@
 # mcap2lerobot
 
-Convert XTacData, ROS2 round-trip, or DAS-Ego MCAP episodes into a LeRobot
-v3.0 dataset. DAS profiles are detected before the dialect fallback; non-DAS
-inputs use `--dialect` (`xtac` by default or `lerobot_roundtrip`). The converter
-does not attempt to support arbitrary ROS topic layouts.
+Convert XTacData, ROS2 round-trip, DAS-Ego, or merged DAS-UMI MCAP episodes
+into a LeRobot v3.0 dataset. DAS profiles are detected before the dialect
+fallback; non-DAS inputs use `--dialect` (`xtac` by default or
+`lerobot_roundtrip`). The converter does not support arbitrary ROS layouts.
 
 | Dialect | Source | Default |
 | --- | --- | --- |
@@ -45,63 +45,113 @@ end-effector (TCP).
 The task text has no human-readable default in the source (only a `task_id`), so
 pass `--task` for a real instruction.
 
-## `lerobot_roundtrip` dialect
+## Profiles and `lerobot_roundtrip` dialect
 
-Select with `--dialect lerobot_roundtrip`. The default topics are:
+`--profile auto` is the default. A capture containing any `robot1/` or
+`robot2/` Finger topic is classified as `das-umi` before the older `das-ego`
+check. A partial Finger recording therefore fails DAS-UMI preflight instead of
+silently becoming an Ego-only dataset. Non-DAS inputs fall back to the selected
+dialect.
 
+Select `--dialect lerobot_roundtrip` for MCAP files produced by this repository
+from `lerobot2mcap`. Its default topics are:
 | MCAP topic | LeRobot feature |
 | --- | --- |
 | `robot/states/data` | `observation.state` |
 | `robot/actions/data` | `action` |
 | `observation/images/<camera>/video` | `observation.images.<camera>` |
 
-The state message must contain an `observation_state` numeric array and the
-action message must contain an `action` numeric array. Video topics must use the
-ROS2 `foxglove_msgs/msg/CompressedVideo` schema with independently decodable
-H.264, H.265, VP9, or AV1 packets.
+The state stream is its output timeline. Actions and images use bounded nearest
+neighbours. Embedded `meta/info.json` and `meta/episode.json` attachments restore
+feature names/dtypes, fps, robot type, codec, and task text when available.
 
-## Synchronization (both dialects)
+## XTac and round-trip synchronization
 
 The state stream is the output timeline. Actions and camera frames are matched
 to each state timestamp using nearest-neighbor synchronization with a bounded
-maximum gap. The pairing is decided before anything is written, so an episode
-that is out of sync fails without leaving a half-written dataset.
+maximum gap. Pairing is decided before anything is written. Round-trip MCAPs
+can restore feature names, dtypes, fps, robot type, codec, and task text from
+embedded `meta/info.json` and `meta/episode.json` attachments.
 
-The DAS-Ego profile recognizes six Protobuf `foxglove.CompressedImage` topics
-(`/robot0/sensor/camera0/compressed` through `camera5`) plus
-`/robot0/sensor/imu` (`foxglove.IMUMeasurement`). It drops each camera's invalid
-first H.264 packet, builds an integer 30 Hz grid over the common camera range,
-and pairs camera and IMU samples by nearest timestamp. Its output has
-`observation.images.camera0` through `camera5`, a six-value float32
-`observation.imu`, and an int64 `observation.source_timestamp`; it deliberately
-has no `action` or fabricated gripper state. Audio, calibration, and system
-status topics are not copied because LeRobot v3 has no corresponding standard
-features. DAS-Ego videos use LeRobot's streaming H.264 encoder and are decoded
-after finalization to verify frame counts and resolution.
+The compatible `das-ego` profile reads the six Ego cameras and Ego IMU. The
+strict `das-umi` profile reads one merged Ego + left Finger + right Finger file;
+its topic map and quality thresholds live in
+[`configs/das_umi.yaml`](../configs/das_umi.yaml).
 
-Reading is done in two passes so memory does not grow with episode length: the
-first pass keeps the state and action vectors plus each camera's packet
-timestamps, the second decodes only the packets the pairing needs and hands
-them to lerobot one state at a time. Design notes, with measurements, are in
-[`mcap2lerobot/README.md`](../mcap2lerobot/README.md).
+## DAS-UMI output
 
-In the `lerobot_roundtrip` dialect, MCAP files written by `lerobot2mcap` also
-carry two attachments, `meta/info.json` (the source dataset's metadata,
-verbatim) and `meta/episode.json` (the episode's index, length and task texts).
-When they are present the converter restores what the ROS messages alone cannot
-say: the `observation.state` / `action` component names and dtype, `fps`,
-`robot_type`, the video codec, and each frame's task text. `--fps`, `--task` and
-`--robot-type` override them (in either dialect); an MCAP without the
-attachments gets the generated names and the defaults listed under limitations.
+DAS-UMI always uses this exact integer-nanosecond 30 Hz grid over the common
+usable interval of every exported continuous stream:
+```text
+T[k] = start + floor(k * 1,000,000,000 / 30)
+```
+
+The eight video features are the existing
+`observation.images.camera0` … `camera5` plus
+`observation.images.left_wrist` and `right_wrist`. The three IMUs are exported
+as `observation.imu`, `.left_wrist`, and `.right_wrist`. Encoder readings keep
+their source value as `observation.magnetic.<side>.raw_value`; their physical
+unit has not been verified and they are not presented as normalized jaw width.
+Configured `PoseInFrame` streams are exported as XYZ plus the first two columns
+of the rotation matrix (`r1` … `r6`), without a coordinate-frame transform.
+World and relative poses remain separate features, and the head block of state
+uses the world pose.
+
+`observation.state` follows the TacVerse order, omitting unavailable optional
+blocks rather than filling them with zeros:
+
+```text
+left hand pose, left raw encoder, right hand pose, right raw encoder, head pose
+```
+
+With the default merged capture (no hand-pose topics) this is 11 values: two
+raw encoder values and a 9D head pose. Configuring both optional hand poses
+makes it 29 values. By default no action is fabricated. With `--export-action`,
+`action[t] = observation.state[t+1]`; the last row is dropped, dimensions and
+names match state, and pairing never crosses an episode boundary.
+
+`observation.source_timestamp` contains the target grid time. Every exported
+stream also has `observation.source_timestamp.<stream>` and
+`observation.source_index.<stream>`, recording the actual selected acquisition
+time and original MCAP message ordinal.
+
+## DAS-UMI preflight and reports
+
+Preflight scans the entire MCAP and decodes every video packet without retaining
+the whole video in memory. It reports topic disposition, raw/usable ranges,
+duration, counts, measured rate, interval P50/P95/P99/MAX, sequence gaps,
+decode errors, clock offsets, nearest-neighbour P50/P95/P99/MAX, and
+selected/unselected/repeated samples.
+
+Acquisition time comes from `header.timestamp`. A stream with no valid header
+time uses `log_time` for the entire stream and says so in the report; partial
+per-message fallback is rejected. Header differences from both `log_time` and
+`publish_time` are checked. Required missing streams, non-finite data, invalid
+poses/quaternions, duplicate/backward time, sequence loss, mid-stream video
+corruption, resolution changes, excessive periods, endpoints, or synchronization
+gaps reject the batch. An undecodable video prefix of at most one second may be
+trimmed; its first decodable packet is retained.
+
+All files in a batch must pass and have the same feature layout before the
+writer is created. `preflight.md` and `conversion.md` default to the sibling
+directory `<output-name>_reports/`; a rejected preflight leaves both reports and
+creates no LeRobot dataset. Calibration topics are additionally retained in
+`meta/das_umi_calibration.json`; audio, system status, depth, and other
+unconfigured topics are inventoried with an exclusion reason but not copied.
+
+A real conversion writes a sibling temporary dataset, then checks LeRobot
+loading, Parquet row counts and integer timelines, all output-video frame counts
+and resolutions, and the shifted-action equality. Only a successful result is
+atomically moved to the requested path. A failed post-write validation leaves
+the temporary path in `conversion.md` and never overwrites an existing dataset.
 
 ## Installation
 
 ```bash
-pip install -e .
+pip install -e .[dev]
 ```
 
-The dataset is written through lerobot's own `LeRobotDataset` API, which
-encodes video with PyAV; no `ffmpeg` binary is needed for this direction.
+The LeRobot writer uses PyAV; no `ffmpeg` binary is required in this direction.
 
 ## Usage
 
@@ -114,16 +164,26 @@ mcap2lerobot /path/to/XTacData \
   --task "Pick up the blocks one by one and place them inside the box."
 ```
 
-Convert selected files:
+Preflight only (reports are still written):
 
 ```bash
-mcap2lerobot episode_000.mcap episode_001.mcap -o ./converted_dataset
+mcap2lerobot output/59214a9e/merged_output_ego_vio.mcap \
+  -o ./59214a9e_lerobot --profile das-umi --check-only
 ```
 
-Auto-detect or explicitly select DAS-Ego:
+Export observations without action (the default):
 
 ```bash
-mcap2lerobot recording.mcap -o ./converted_dataset --profile das-ego --fps 30
+mcap2lerobot output/59214a9e/merged_output_ego_vio.mcap \
+  -o ./59214a9e_lerobot --config configs/das_umi.yaml --no-export-action
+```
+
+Export observations plus one-step-ahead action:
+
+```bash
+mcap2lerobot output/59214a9e/merged_output_ego_vio.mcap \
+  -o ./59214a9e_lerobot_action --export-action \
+  --report-dir ./59214a9e_reports
 ```
 
 Convert `lerobot2mcap` round-trip output and optionally override its topics:
@@ -139,18 +199,39 @@ mcap2lerobot ./mcap_output -o ./converted_dataset \
 
 Run `mcap2lerobot --help` for all options.
 
-## Current limitations
+The unified Python facade accepts the same options:
+
+```python
+from xense_dataset_convert import Format, convert
+
+convert(
+    Format.MCAP,
+    Format.LEROBOT,
+    inputs="output/59214a9e/merged_output_ego_vio.mcap",
+    output="59214a9e_lerobot",
+    profile="das-umi",
+    config="configs/das_umi.yaml",
+    export_action=True,
+)
+```
+
+Existing ROS2 and DAS-Ego commands remain valid:
+
+```bash
+mcap2lerobot ./mcap_output -o ./converted_dataset --dialect lerobot_roundtrip --task "Pick up the object"
+mcap2lerobot ego.mcap -o ./ego_dataset --profile das-ego --fps 30
+```
+
+Run `mcap2lerobot --help` for topic/field overrides and all options.
+
+## Limits
 
 - Supported source layouts are XTacData (`--dialect xtac`), ROS2 round-trip
-  (`--dialect lerobot_roundtrip`), and the auto-detected DAS-Ego Protobuf profile.
-  Other topic layouts are not supported.
-- One MCAP file must represent exactly one episode.
-- State and action features are one-dimensional numeric arrays.
-- For MCAP files without the `meta/info.json` / `meta/episode.json`
-  attachments (written by `lerobot2mcap` before 0.3.2, or by other tools), task
-  text and robot type come from CLI options or the defaults `Converted from
-  MCAP` / `mcap`, vector names are generated as `state_0`, `action_0`, and so
-  on, and lerobot encodes video with its own default codec.
-- Per-episode statistics are recomputed by lerobot; `meta/stats.json` of the
-  source is not carried over.
+  (`--dialect lerobot_roundtrip`), DAS-Ego, and merged DAS-UMI.
+- Round-trip state/action features are one-dimensional numeric arrays.
+- Round-trip MCAP files without embedded metadata use generated names and CLI defaults.
+- Protobuf DAS support covers the configured Foxglove/DAS schemas; it is not a
+  generic arbitrary-topic converter.
 - The output directory must not already exist.
+- Per-episode LeRobot statistics are recomputed; source `meta/stats.json` is not
+  copied.

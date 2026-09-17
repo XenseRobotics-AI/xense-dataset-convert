@@ -24,6 +24,10 @@ CONFIG_OPTIONS = frozenset(
         "task",
         "robot_type",
         "profile",
+        "config",
+        "check_only",
+        "export_action",
+        "report_dir",
     }
 )
 ACCEPTED_OPTIONS = CONFIG_OPTIONS | {"repo_id"}

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_TASK = "Converted from MCAP"
 DEFAULT_ROBOT_TYPE = "mcap"
 AUTO_PROFILE = "auto"
 ROS2_PROFILE = "ros2"
 DAS_EGO_PROFILE = "das-ego"
-SUPPORTED_PROFILES = frozenset({AUTO_PROFILE, ROS2_PROFILE, DAS_EGO_PROFILE})
+DAS_UMI_PROFILE = "das-umi"
+SUPPORTED_PROFILES = frozenset(
+    {AUTO_PROFILE, ROS2_PROFILE, DAS_EGO_PROFILE, DAS_UMI_PROFILE}
+)
 
 # Source layouts mcap2lerobot can read. "xtac" is the default: XTacData
 # recordings from the XTac-UMI-G1 grippers. "lerobot_roundtrip" is the ROS2 CDR
@@ -46,6 +50,10 @@ class ConverterConfig:
     task: str | None = None
     robot_type: str | None = None
     profile: str = AUTO_PROFILE
+    config: Path | None = None
+    check_only: bool = False
+    export_action: bool = False
+    report_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.dialect not in DIALECTS:
@@ -66,6 +74,10 @@ class ConverterConfig:
             choices = ", ".join(sorted(SUPPORTED_PROFILES))
             raise ValueError(f"profile must be one of {choices}, got {self.profile!r}")
         object.__setattr__(self, "profile", profile)
+        if self.config is not None:
+            object.__setattr__(self, "config", Path(self.config).expanduser())
+        if self.report_dir is not None:
+            object.__setattr__(self, "report_dir", Path(self.report_dir).expanduser())
 
     def video_feature_name(self, topic: str) -> str | None:
         normalized = normalize_topic(topic)

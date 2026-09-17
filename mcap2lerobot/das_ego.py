@@ -10,7 +10,13 @@ from typing import Any
 
 import numpy as np
 
-from .config import DAS_EGO_PROFILE, ROS2_PROFILE, ConverterConfig, normalize_topic
+from .config import (
+    DAS_EGO_PROFILE,
+    DAS_UMI_PROFILE,
+    ROS2_PROFILE,
+    ConverterConfig,
+    normalize_topic,
+)
 from .reader import (
     EpisodeData,
     TimedArray,
@@ -91,6 +97,14 @@ def _looks_like_das_ego(channels: Iterable[tuple[str, str, str]]) -> bool:
     return has_imu and cameras == set(DAS_EGO_CAMERA_FEATURES)
 
 
+def _looks_like_das_umi(channels: Iterable[tuple[str, str, str]]) -> bool:
+    """Select merged captures even when a required Finger stream is missing."""
+    return any(
+        normalize_topic(topic).startswith(("robot1/", "robot2/"))
+        for topic, _, _ in channels
+    )
+
+
 def detect_mcap_profile(path: Path) -> str:
     """Return ``das-ego`` for its exact six-camera/IMU layout, else ``ros2``."""
     make_reader, _, _ = _import_protobuf()
@@ -108,6 +122,8 @@ def detect_mcap_profile(path: Path) -> str:
                         schema.name if schema else "",
                     )
                 )
+            if _looks_like_das_umi(channels):
+                return DAS_UMI_PROFILE
             return DAS_EGO_PROFILE if _looks_like_das_ego(channels) else ROS2_PROFILE
 
     channels_by_id: dict[int, tuple[str, str, str]] = {}
@@ -119,6 +135,8 @@ def detect_mcap_profile(path: Path) -> str:
                 channel.message_encoding,
                 schema.name if schema else "",
             )
+            if _looks_like_das_umi(channels_by_id.values()):
+                return DAS_UMI_PROFILE
             if _looks_like_das_ego(channels_by_id.values()):
                 return DAS_EGO_PROFILE
     return ROS2_PROFILE
@@ -338,4 +356,6 @@ def reader_for_profile(
         profile = detect_mcap_profile(path)
     if profile == DAS_EGO_PROFILE:
         return profile, DasEgoEpisodeReader(config, video_decoder_factory)
+    if profile == DAS_UMI_PROFILE:
+        return profile, None
     return profile, McapEpisodeReader(config, video_decoder_factory)

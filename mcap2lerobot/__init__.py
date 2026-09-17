@@ -1,4 +1,4 @@
-"""Convert ROS2 MCAP episodes to LeRobot v3 datasets."""
+"""Convert ROS2 and DAS MCAP episodes to LeRobot v3 datasets."""
 
 from .config import ConverterConfig
 from .converter import McapToLeRobotConverter

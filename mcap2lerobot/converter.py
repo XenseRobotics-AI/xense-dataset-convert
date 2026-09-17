@@ -17,7 +17,6 @@ import numpy as np
 from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, DIALECT_XTAC, ConverterConfig
 from .reader import EpisodeData, McapEpisodeReader, TimedArray
 from .das_ego import (
-    DAS_EGO_IMU_FEATURE,
     DAS_EGO_ROBOT_TYPE,
     DAS_EGO_TASK,
     SOURCE_TIMESTAMP_FEATURE,
@@ -146,13 +145,21 @@ def plan_pairing(episode: EpisodeData, fps: int, max_sync_gap_frames: float) -> 
     )
     return Plan(
         action_index=(
-            _pair_to_states(action_ns, state_ns, max_gap_ns, "action")
+            _pair_to_states(
+                action_ns,
+                state_ns,
+                episode.max_gaps_ns.get("action", max_gap_ns),
+                "action",
+            )
             if episode.actions
             else None
         ),
         video_index={
             feature_name: _pair_to_states(
-                index.timestamps_ns, state_ns, max_gap_ns, feature_name
+                index.timestamps_ns,
+                state_ns,
+                episode.max_gaps_ns.get(feature_name, max_gap_ns),
+                feature_name,
             )
             for feature_name, index in episode.videos.items()
         },
@@ -169,7 +176,7 @@ def plan_pairing(episode: EpisodeData, fps: int, max_sync_gap_frames: float) -> 
             feature_name: _pair_to_states(
                 np.asarray([item.timestamp_ns for item in values], dtype=np.int64),
                 state_ns,
-                max_gap_ns,
+                episode.max_gaps_ns.get(feature_name, max_gap_ns),
                 feature_name,
             )
             for feature_name, values in episode.observations.items()
@@ -303,8 +310,8 @@ def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
         features[feature_name] = _vector_feature(
             episode, feature_name, values[0].value, feature_name.rsplit(".", 1)[-1]
         )
-    if DAS_EGO_IMU_FEATURE in features:
-        features[DAS_EGO_IMU_FEATURE]["names"] = [
+    for imu_feature in [key for key in features if key.startswith("observation.imu")]:
+        features[imu_feature]["names"] = [
             "angular_velocity.x",
             "angular_velocity.y",
             "angular_velocity.z",
@@ -312,6 +319,7 @@ def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
             "linear_acceleration.y",
             "linear_acceleration.z",
         ]
+    if episode.profile in ("das-ego", "das-umi"):
         features[SOURCE_TIMESTAMP_FEATURE] = {
             "dtype": "int64",
             "shape": (1,),
@@ -322,7 +330,19 @@ def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
         if len(shape) != 3 or shape[2] not in (1, 3, 4):
             raise ValueError(f"{feature_name} must be an HWC image, got {shape}")
         features[feature_name] = _video_feature(episode, feature_name, shape)
+    for label in episode.source_labels.values():
+        timestamp_key, index_key = source_audit_features(label)
+        features[timestamp_key] = {"dtype": "int64", "shape": (1,), "names": None}
+        features[index_key] = {"dtype": "int64", "shape": (1,), "names": None}
     return features
+
+
+def source_audit_features(label: str) -> tuple[str, str]:
+    """Names of the actual source timestamp and raw message-index columns."""
+    return (
+        f"observation.source_timestamp.{label}",
+        f"observation.source_index.{label}",
+    )
 
 
 def resolve_fps(config: ConverterConfig, episode: EpisodeData) -> int:
@@ -336,6 +356,8 @@ def resolve_fps(config: ConverterConfig, episode: EpisodeData) -> int:
 
 
 def resolve_robot_type(config: ConverterConfig, episode: EpisodeData) -> str:
+    if episode.profile == "das-umi":
+        return config.robot_type or "das_umi"
     if episode.profile == "das-ego":
         return config.robot_type or DAS_EGO_ROBOT_TYPE
     return config.robot_type or str(
@@ -351,7 +373,7 @@ def source_video_codec(episode: EpisodeData) -> str | None:
             codec = (spec.get("info") or {}).get("video.codec")
             if codec:
                 return str(codec)
-    if episode.profile == "das-ego":
+    if episode.profile in ("das-ego", "das-umi"):
         codecs = {video.format for video in episode.videos.values()}
         if len(codecs) == 1:
             return codecs.pop()
@@ -364,6 +386,8 @@ def frame_task(
     """Task text for one frame: override, else the row's own task, else default."""
     if config.task:
         return config.task
+    if episode.profile == "das-umi":
+        return config.task or str((episode.info or {}).get("task") or "DAS UMI sensor capture")
     if episode.profile == "das-ego":
         return DAS_EGO_TASK
     meta = episode.episode_meta or {}
@@ -510,14 +534,12 @@ class McapToLeRobotConverter:
         mcap_files = discover_mcap_files(self.inputs)
         if not mcap_files:
             raise ValueError("No .mcap files found")
-        if self.output_root.exists():
-            raise FileExistsError(f"Output path already exists: {self.output_root}")
-
+        profile = None
         if self.reader is None:
             from .das_ego import detect_mcap_profile, reader_for_profile
 
-            profile = self.config.profile
-            if profile == "auto":
+            requested_profile = self.config.profile
+            if requested_profile == "auto":
                 detected = detect_mcap_profile(mcap_files[0])
                 if detected == "ros2":
                     profile = self.config.dialect
@@ -527,6 +549,14 @@ class McapToLeRobotConverter:
             else:
                 profile, self.reader = reader_for_profile(self.config, mcap_files[0])
             logger.info("Using %s MCAP source", profile)
+        if profile == "das-umi":
+            from .das_umi import convert_das_umi
+
+            return convert_das_umi(self, mcap_files)
+        if self.config.check_only:
+            raise ValueError("--check-only is currently supported by the das-umi profile")
+        if self.output_root.exists():
+            raise FileExistsError(f"Output path already exists: {self.output_root}")
         first_episode = self.reader.read(mcap_files[0])
         fps = resolve_fps(self.config, first_episode)
         features = build_features(first_episode)
@@ -555,7 +585,7 @@ class McapToLeRobotConverter:
             features=features,
             use_videos=bool(first_episode.videos),
             video_codec=video_codec,
-            streaming_encoding=first_episode.profile == "das-ego",
+            streaming_encoding=first_episode.profile in ("das-ego", "das-umi"),
         )
 
         source_metadata: list[dict[str, Any] | None] = [first_episode.source_metadata]
@@ -642,6 +672,18 @@ class McapToLeRobotConverter:
                     frame[feature_name] = np.asarray(
                         sample.value, dtype=expected_features[feature_name]["dtype"]
                     )
+                for source_feature, label in episode.source_labels.items():
+                    if source_feature in episode.videos:
+                        selected_index = int(plan.video_index[source_feature][position])
+                        source_time = int(episode.videos[source_feature].timestamps_ns[selected_index])
+                    else:
+                        selected_index = int(plan.observation_index[source_feature][position])
+                        source_time = int(episode.observations[source_feature][selected_index].timestamp_ns)
+                    original = episode.source_indices.get(source_feature)
+                    source_index = int(original[selected_index]) if original is not None else selected_index
+                    timestamp_key, index_key = source_audit_features(label)
+                    frame[timestamp_key] = np.asarray([source_time], dtype=np.int64)
+                    frame[index_key] = np.asarray([source_index], dtype=np.int64)
                 if SOURCE_TIMESTAMP_FEATURE in expected_features:
                     frame[SOURCE_TIMESTAMP_FEATURE] = np.asarray(
                         [timeline_ns[position]], dtype=np.int64

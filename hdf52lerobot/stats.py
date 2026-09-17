@@ -100,6 +100,65 @@ def _batched(items: list[np.ndarray], size: int):
         yield items[start : start + size]
 
 
+class _NumericMoments:
+    """Running sums over every row of one numeric feature.
+
+    min/max/mean/std/count are all recoverable from sums, so the rows
+    themselves need not be kept: for a full RDT dataset that is 1.4 GB of
+    float64 the accumulator no longer holds, and it is what lets a checkpoint
+    be a few numbers per feature rather than the whole corpus so far.
+    """
+
+    __slots__ = ("total", "total_sq", "minimum", "maximum", "rows")
+
+    def __init__(self, width: int) -> None:
+        self.total = np.zeros(width)
+        self.total_sq = np.zeros(width)
+        self.minimum = np.full(width, np.inf)
+        self.maximum = np.full(width, -np.inf)
+        self.rows = 0
+
+    def add(self, rows: np.ndarray) -> None:
+        values = np.asarray(rows, dtype=np.float64)
+        self.total += values.sum(axis=0)
+        self.total_sq += np.square(values).sum(axis=0)
+        self.minimum = np.minimum(self.minimum, values.min(axis=0))
+        self.maximum = np.maximum(self.maximum, values.max(axis=0))
+        self.rows += len(values)
+
+    def reduce(self) -> dict[str, Any]:
+        mean = self.total / self.rows
+        # Clamped because the two-pass and one-pass forms differ in the last
+        # bits, and a variance of -1e-17 has no square root.
+        variance = np.maximum(self.total_sq / self.rows - mean * mean, 0.0)
+        return {
+            "min": _to_list(self.minimum),
+            "max": _to_list(self.maximum),
+            "mean": _to_list(mean),
+            "std": _to_list(np.sqrt(variance)),
+            "count": [self.rows],
+        }
+
+    def state(self) -> dict[str, Any]:
+        return {
+            "total": self.total.tolist(),
+            "total_sq": self.total_sq.tolist(),
+            "minimum": self.minimum.tolist(),
+            "maximum": self.maximum.tolist(),
+            "rows": self.rows,
+        }
+
+    @classmethod
+    def restore(cls, state: dict[str, Any]) -> "_NumericMoments":
+        moments = cls(len(state["total"]))
+        moments.total = np.asarray(state["total"], dtype=np.float64)
+        moments.total_sq = np.asarray(state["total_sq"], dtype=np.float64)
+        moments.minimum = np.asarray(state["minimum"], dtype=np.float64)
+        moments.maximum = np.asarray(state["maximum"], dtype=np.float64)
+        moments.rows = int(state["rows"])
+        return moments
+
+
 class _ImageMoments:
     """Running per-channel sums over every sampled pixel of one image feature.
 
@@ -141,6 +200,27 @@ class _ImageMoments:
             "count": [self.frames],
         }
 
+    def state(self) -> dict[str, Any]:
+        return {
+            "total": self.total.tolist(),
+            "total_sq": self.total_sq.tolist(),
+            "minimum": self.minimum.tolist(),
+            "maximum": self.maximum.tolist(),
+            "pixels": self.pixels,
+            "frames": self.frames,
+        }
+
+    @classmethod
+    def restore(cls, state: dict[str, Any]) -> "_ImageMoments":
+        moments = cls()
+        moments.total = np.asarray(state["total"], dtype=np.float64)
+        moments.total_sq = np.asarray(state["total_sq"], dtype=np.float64)
+        moments.minimum = np.asarray(state["minimum"], dtype=np.float64)
+        moments.maximum = np.asarray(state["maximum"], dtype=np.float64)
+        moments.pixels = int(state["pixels"])
+        moments.frames = int(state["frames"])
+        return moments
+
 
 def reduce_images(frames_chw: list[np.ndarray]) -> dict[str, Any]:
     """Per-channel min/max/mean/std over prepared frames, each of shape (3,1,1)."""
@@ -153,12 +233,13 @@ class StatsAccumulator:
     """Collect per-feature samples across episodes, then reduce them once."""
 
     def __init__(self) -> None:
-        self._numeric: dict[str, list[np.ndarray]] = {}
+        self._numeric: dict[str, _NumericMoments] = {}
         self._images: dict[str, _ImageMoments] = {}
 
     def add_numeric(self, key: str, values: np.ndarray) -> None:
         """Add ``(N,)`` or ``(N, D)`` rows for a numeric feature."""
-        self._numeric.setdefault(key, []).append(_as_rows(values))
+        rows = _as_rows(values)
+        self._numeric.setdefault(key, _NumericMoments(rows.shape[1])).add(rows)
 
     def add_images(self, key: str, frames: list[np.ndarray]) -> None:
         """Add sampled RGB frames (HWC uint8) for an image feature."""
@@ -182,7 +263,7 @@ class StatsAccumulator:
         episode: dict[str, dict[str, Any]] = {}
         for key, values in numeric.items():
             rows = _as_rows(values)
-            self._numeric.setdefault(key, []).append(rows)
+            self._numeric.setdefault(key, _NumericMoments(rows.shape[1])).add(rows)
             episode[key] = reduce_numeric(rows)
         for key, frames in images.items():
             prepared = [_prepare_image(frame) for frame in frames]
@@ -190,11 +271,27 @@ class StatsAccumulator:
             episode[key] = reduce_images(prepared)
         return {key: episode[key] for key in sorted(episode)}
 
+    def state(self) -> dict[str, Any]:
+        """Everything needed to carry on adding to these statistics."""
+        return {
+            "numeric": {key: moments.state() for key, moments in self._numeric.items()},
+            "images": {key: moments.state() for key, moments in self._images.items()},
+        }
+
+    def restore(self, state: dict[str, Any]) -> None:
+        """Adopt a :meth:`state` from an interrupted run."""
+        self._numeric = {
+            key: _NumericMoments.restore(value) for key, value in state["numeric"].items()
+        }
+        self._images = {
+            key: _ImageMoments.restore(value) for key, value in state["images"].items()
+        }
+
     def finalize(self) -> dict[str, dict[str, Any]]:
         """Dataset-wide stats over every frame seen, keys sorted."""
         stats: dict[str, dict[str, Any]] = {}
-        for key, chunks in self._numeric.items():
-            stats[key] = reduce_numeric(np.concatenate(chunks, axis=0))
+        for key, moments in self._numeric.items():
+            stats[key] = moments.reduce()
         for key, moments in self._images.items():
             stats[key] = moments.reduce()
         return {key: stats[key] for key in sorted(stats)}

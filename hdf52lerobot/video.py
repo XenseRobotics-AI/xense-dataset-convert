@@ -167,11 +167,34 @@ class VideoAggregator:
         if not path.exists() or path.stat().st_size < limit:
             return
         self._close_current()
+        self._advance()
+
+    def _advance(self) -> None:
+        """Move to the next file, carrying into the next chunk when full."""
         self._file_index += 1
         if self._file_index >= self.config.chunks_size:
             self._file_index = 0
             self._chunk_index += 1
         self._frames_in_file = 0
+
+    def state(self) -> dict[str, int]:
+        """Where this camera's next frame would go."""
+        return {"chunk_index": self._chunk_index, "file_index": self._file_index}
+
+    def restore(self, state: dict[str, int]) -> None:
+        """Resume writing after the files an interrupted run left behind.
+
+        The next episode starts a new mp4 rather than appending to the last
+        one: a container closed at an interrupt is complete and correct, and
+        re-opening it to append would risk the one thing that must not go wrong
+        here, which is that a frame's placement matches what `meta/episodes`
+        says. A camera's frames spanning more files than usual is ordinary --
+        the layout allows for it, and every reader follows the metadata.
+        """
+        self._chunk_index = int(state["chunk_index"])
+        self._file_index = int(state["file_index"])
+        if self.path_for(self._chunk_index, self._file_index).exists():
+            self._advance()
 
     def close(self) -> None:
         self._close_current()

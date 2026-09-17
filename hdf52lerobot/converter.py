@@ -5,7 +5,9 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
+from dataclasses import asdict
 import os
+import hashlib
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,6 +15,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from .checkpoint import CHECKPOINT_NAME, CHECKPOINT_VERSION, Checkpoint, InterruptRequest
 from .config import ConverterConfig
 from .features import SOURCE_TIMESTAMP, build_features, video_features
 from .ee_transform import transform_pose_block
@@ -128,6 +131,7 @@ class Hdf5ToLeRobotConverter:
         config: ConverterConfig | None = None,
         overwrite: bool = False,
         skip_failed_episodes: bool = False,
+        resume: bool = True,
     ):
         """
         Args:
@@ -138,12 +142,17 @@ class Hdf5ToLeRobotConverter:
                 Skipped recordings are listed in ``meta/sources.json``. Worth
                 turning on for a bulk run over third-party recordings, where
                 one damaged directory should not cost a dataset of thousands.
+            resume: Carry on from the checkpoint an interrupted run left, when
+                there is one for this configuration. Turn it off to insist on
+                converting from the first episode.
         """
         self.inputs = list(inputs)
         self.output_root = Path(output_root).expanduser().resolve()
         self.config = config or ConverterConfig()
         self.overwrite = overwrite
         self.skip_failed_episodes = skip_failed_episodes
+        self.resume = resume
+        self._interrupt = InterruptRequest()
 
     def convert(self) -> Path:
         episode_paths = discover_episodes(self.inputs)
@@ -152,15 +161,33 @@ class Hdf5ToLeRobotConverter:
         if self.config.world_frame != "none":
             logger.info(f"World frame: {self.config.world_frame}")
 
-        if self.output_root.exists():
-            if not self.overwrite:
-                raise FileExistsError(
-                    f"Output already exists: {self.output_root} (pass overwrite to replace it)"
-                )
-            shutil.rmtree(self.output_root)
-        self.output_root.mkdir(parents=True)
+        resume = Checkpoint.load(self.output_root) if self.resume else None
+        if resume is not None and resume.config_fingerprint != self._fingerprint():
+            logger.warn(
+                "checkpoint was written with a different configuration; starting over"
+            )
+            resume = None
 
-        skipped: list[dict[str, Any]] = []
+        if self.output_root.exists():
+            if resume is None:
+                if not self.overwrite:
+                    raise FileExistsError(
+                        f"Output already exists: {self.output_root} (pass overwrite to replace it)"
+                    )
+                shutil.rmtree(self.output_root)
+                self.output_root.mkdir(parents=True)
+        else:
+            self.output_root.mkdir(parents=True)
+
+        done: set[str] = set()
+        if resume is not None:
+            done = set(resume.converted)
+            logger.info(
+                f"Resuming: {len(done)} episode(s) already converted, "
+                f"{len(resume.skipped)} skipped"
+            )
+
+        skipped: list[dict[str, Any]] = list(resume.skipped) if resume else []
         first, first_position = self._first_readable(episode_paths, skipped)
         state_names = self.config.state_names(first.kinds)
         features = build_features(first, self.config, state_names)
@@ -180,45 +207,107 @@ class Hdf5ToLeRobotConverter:
             for stream in first.videos.values()
         }
         accumulator = StatsAccumulator()
-        sources: list[dict[str, Any]] = []
+        sources: list[dict[str, Any]] = list(resume.sources) if resume else []
+        if resume is not None:
+            writer.restore(resume.writer)
+            accumulator.restore(resume.stats)
+            for key, aggregator in aggregators.items():
+                if key in resume.videos:
+                    aggregator.restore(resume.videos[key])
 
         # One pool for the whole run: a pool per episode means fresh threads,
         # and every fresh thread can pull a new malloc arena that is never
         # returned, so memory would creep up with the episode count.
         workers = self.config.workers or max(1, (os.cpu_count() or 2) // 2)
         pool = ThreadPoolExecutor(max_workers=min(workers, len(first.videos) or 1))
+        interrupted = False
         try:
-            for position, path in enumerate(episode_paths):
-                if position < first_position:
-                    continue  # already reported while looking for a reference
-                try:
-                    episode = first if position == first_position else read_episode(path, self.config)
-                    self._check_layout(episode, first, state_names)
-                    sync = build_sync(episode, self.config)
-                except Exception as error:
-                    if not self.skip_failed_episodes:
-                        raise
-                    # Nothing has been written for this episode yet, so dropping
-                    # it leaves the dataset consistent.
-                    logger.warn(f"{path.name}: skipped ({type(error).__name__}: {error})")
-                    skipped.append(self._skip_record(path, error))
-                    continue
-                sources.append(
-                    self._convert_episode(episode, sync, writer, aggregators, accumulator, pool)
-                )
+            with self._interrupt as interrupt:
+                for position, path in enumerate(episode_paths):
+                    if position < first_position:
+                        continue  # already reported while looking for a reference
+                    if str(path) in done:
+                        continue  # converted before the interrupt
+                    if interrupt.requested:
+                        # Stop between episodes: mid-episode there would be a
+                        # half-written mp4 and no row describing it.
+                        interrupted = True
+                        logger.warn(
+                            f"Interrupted after {len(sources)} episode(s) this run; "
+                            f"finishing the checkpoint"
+                        )
+                        break
+                    try:
+                        episode = (
+                            first
+                            if position == first_position
+                            else read_episode(path, self.config)
+                        )
+                        self._check_layout(episode, first, state_names)
+                        sync = build_sync(episode, self.config)
+                    except Exception as error:
+                        if not self.skip_failed_episodes:
+                            raise
+                        # Nothing has been written for this episode yet, so
+                        # dropping it leaves the dataset consistent.
+                        logger.warn(f"{path.name}: skipped ({type(error).__name__}: {error})")
+                        skipped.append(self._skip_record(path, error))
+                        continue
+                    sources.append(
+                        self._convert_episode(
+                            episode, sync, writer, aggregators, accumulator, pool
+                        )
+                    )
         finally:
             pool.shutdown(wait=True)
             for aggregator in aggregators.values():
                 aggregator.close()
 
+        if interrupted:
+            writer.flush()
+            Checkpoint(
+                version=CHECKPOINT_VERSION,
+                config_fingerprint=self._fingerprint(),
+                converted=sorted(done | {record["source_dir"] for record in sources}),
+                skipped=skipped,
+                sources=sources,
+                writer=writer.state(),
+                videos={key: aggregator.state() for key, aggregator in aggregators.items()},
+                stats=accumulator.state(),
+            ).save(self.output_root)
+            raise KeyboardInterrupt(
+                f"stopped after {len(sources)} episode(s); rerun to resume from "
+                f"{self.output_root / CHECKPOINT_NAME}"
+            )
+
         if not sources:
             raise ValueError(f"No episode could be converted; {len(skipped)} were skipped")
         writer.finalize(accumulator.finalize())
         self._write_sources(sources, skipped)
+        Checkpoint.clear(self.output_root)
         if skipped:
             logger.warn(f"Skipped {len(skipped)} unusable recording(s); see meta/sources.json")
         logger.info(f"Done: {self.output_root}")
         return self.output_root
+
+    def request_stop(self) -> None:
+        """Ask a running conversion to stop after the episode in progress.
+
+        What the signal handler does, available to a caller driving this in a
+        thread. The run ends by raising ``KeyboardInterrupt`` once the
+        checkpoint is written.
+        """
+        self._interrupt.requested = True
+
+    def _fingerprint(self) -> str:
+        """Identifies the configuration a checkpoint was written under.
+
+        Resuming under different settings would splice two different datasets
+        together -- a different fps, codec or stream layout partway through,
+        with nothing in the result to show where the seam is.
+        """
+        payload = json.dumps(asdict(self.config), sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
     @staticmethod
     def _skip_record(path: Path, error: Exception) -> dict[str, Any]:

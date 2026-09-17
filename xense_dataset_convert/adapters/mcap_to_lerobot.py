@@ -12,6 +12,7 @@ from ._support import lerobot_totals
 # converter takes separately.
 CONFIG_OPTIONS = frozenset(
     {
+        "dialect",
         "state_topic",
         "action_topic",
         "state_field",

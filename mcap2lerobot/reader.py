@@ -63,10 +63,24 @@ class EpisodeData:
     actions: list[TimedArray] = field(default_factory=list)
     videos: dict[str, VideoStreamIndex] = field(default_factory=dict)
     info: dict[str, Any] | None = None
-    """The source dataset's ``meta/info.json``, when lerobot2mcap attached it."""
+    """The source dataset's ``meta/info.json``, when lerobot2mcap attached it.
+
+    The ``xtac`` dialect synthesises the same shape from the MCAP metadata
+    records instead of reading an attachment, so the converter's feature, fps,
+    robot_type and codec resolution work unchanged for both sources."""
     episode_meta: dict[str, Any] | None = None
     """lerobot2mcap's per-episode manifest: ``episode_index``, ``length``,
     ``tasks`` and ``task_index_to_task``."""
+    extra_vectors: dict[str, list[TimedArray]] = field(default_factory=dict)
+    """Feature -> its own timed samples, for scalar/vector observations that ride
+    on their own clock and must be nearest-neighbour paired to the states like
+    the action stream (e.g. the ``xtac`` dialect's
+    ``observation.tracker_confidence`` from ``/pico/pose``). Empty for the
+    lerobot2mcap round-trip."""
+    source_metadata: dict[str, Any] | None = None
+    """Raw source metadata a dialect wants to carry past the converter, e.g. the
+    ``xtac`` dialect's per-episode ``episode`` / ``xense_train_mcap`` MCAP
+    metadata records used to write the extra ``meta/*.json`` files."""
 
 
 def get_message_field(message: Any, field_name: str) -> Any:

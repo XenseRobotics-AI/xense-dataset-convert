@@ -7,6 +7,13 @@ from dataclasses import dataclass
 DEFAULT_TASK = "Converted from MCAP"
 DEFAULT_ROBOT_TYPE = "mcap"
 
+# Source layouts mcap2lerobot can read. "xtac" is the default: XTacData
+# recordings from the XTac-UMI-G1 grippers. "lerobot_roundtrip" is the ROS2 CDR
+# layout this repository's lerobot2mcap emits, kept for the round-trip path.
+DIALECT_XTAC = "xtac"
+DIALECT_LEROBOT_ROUNDTRIP = "lerobot_roundtrip"
+DIALECTS = (DIALECT_XTAC, DIALECT_LEROBOT_ROUNDTRIP)
+
 
 def normalize_topic(topic: str) -> str:
     return topic.strip("/")
@@ -23,6 +30,7 @@ class ConverterConfig:
     from the state timestamps.
     """
 
+    dialect: str = DIALECT_XTAC
     state_topic: str = "robot/states/data"
     action_topic: str = "robot/actions/data"
     state_field: str = "observation_state"
@@ -35,6 +43,8 @@ class ConverterConfig:
     robot_type: str | None = None
 
     def __post_init__(self) -> None:
+        if self.dialect not in DIALECTS:
+            raise ValueError(f"Unknown dialect {self.dialect!r}; expected one of {DIALECTS}")
         object.__setattr__(self, "state_topic", normalize_topic(self.state_topic))
         object.__setattr__(self, "action_topic", normalize_topic(self.action_topic))
         object.__setattr__(

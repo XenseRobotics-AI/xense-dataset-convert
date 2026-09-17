@@ -279,6 +279,19 @@ class XTacMcapReader:
         names = [name for name in (train.get("dimension_names") or "").split(",") if name]
         state_size = int(episode.states[0].value.size) if episode.states else len(names)
         vector_names = names if len(names) == state_size else None
+        if names and vector_names is None:
+            # Everything downstream addresses these columns by name -- the
+            # viewer's replay, the pose trajectories, the per-feature filters --
+            # so falling back to `state_0..state_n` is the difference between a
+            # readable dataset and an opaque one. Say so rather than degrade in
+            # silence.
+            logger.warning(
+                "%s: %d dimension_names for a %d-value state; dropping them and "
+                "numbering the columns instead",
+                episode.source.name,
+                len(names),
+                state_size,
+            )
 
         features: dict[str, Any] = {
             "observation.state": _vector_spec(state_size, vector_names),
@@ -505,6 +518,9 @@ def _write_taccap_extrinsics(meta: Path, parsed: list[dict[str, Any] | None]) ->
                 "episode_index": index,
                 "gripper_open_rad": (entry or {}).get("gripper_open_rad"),
                 "legacy_extrinsics": tracker_to_ee is None,
+                # Fixed, not derived: the reference schema carries the field,
+                # but an XTacData recording has no counterpart to read it from.
+                # Deriving it would mean inventing a meaning for it here.
                 "legacy_world_pose": False,
                 # "ee" pose_stage means the recorded poses are already the
                 # end-effector; the extrinsic below is the snapshot that produced them.
@@ -551,6 +567,10 @@ def _load_json_field(value: Any) -> Any:
         try:
             return json.loads(value)
         except ValueError:
+            # A record that will not parse is not the same thing as a record
+            # that is absent, and the provenance file cannot tell them apart
+            # once this returns.
+            logger.warning("Ignoring an unparseable JSON metadata field: %.80s", value)
             return {}
     return value or {}
 
@@ -580,4 +600,4 @@ def _int_or_none(value: Any) -> int | None:
 
 def _validate_monotonic(name: str, timestamps: list[int], source: Path) -> None:
     if any(current < previous for previous, current in zip(timestamps, timestamps[1:])):
-        raise ValueError(f"{source}: {name} timestamps are not monotonic")
+        raise ValueError(f"{source}: {name} timestamps go backwards")

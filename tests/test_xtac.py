@@ -7,6 +7,7 @@ is exercised out of tree against the XTacData fixtures.
 """
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -100,6 +101,26 @@ def test_synthesize_metadata_builds_info_and_episode_meta():
     assert TRACKER_CONFIDENCE_FEATURE in episode.info["features"]
     # task falls back to the source task_id when not overridden
     assert episode.episode_meta["tasks"] == ["TASK-1"]
+
+
+def test_synthesize_metadata_warns_when_dimension_names_do_not_fit(caplog):
+    """A name list that does not match the state size is dropped — loudly.
+
+    Everything downstream addresses these columns by name, so numbering them
+    instead is the difference between a readable dataset and an opaque one. It
+    is allowed to happen; it is not allowed to happen quietly.
+    """
+    episode = EpisodeData(source=Path("EP.mcap"))
+    episode.states = [TimedArray(0, np.zeros(29, dtype=np.float64), task_index=0)]
+    episode.actions = [TimedArray(0, np.zeros(29, dtype=np.float64))]
+    records = {"xense_train_mcap": {"dimension_names": "a,b,c", "fps": "30"}, "episode": {}}
+
+    with caplog.at_level(logging.WARNING, logger="mcap2lerobot.xtac"):
+        XTacMcapReader(ConverterConfig())._synthesize_metadata(episode, records)
+
+    names = episode.info["features"]["observation.state"]["names"]
+    assert len(names) == 29 and names[0] == "state_0"
+    assert "3 dimension_names" in caplog.text
 
 
 def test_synthesize_metadata_honours_task_override():

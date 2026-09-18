@@ -392,6 +392,8 @@ class Hdf5ToLeRobotConverter:
     ) -> dict[str, Any]:
         """Write one episode; returns its ``meta/sources.json`` entry."""
         logger.info(f"{episode.name}: {sync.length} frames @ {self.config.fps}fps")
+        for message in sync.unchecked:
+            logger.warn(f"{episode.name}: {message} -- not checked, so kept")
         for line in sync.describe():
             logger.info(f"  {line}")
         loose = {key: stream.loose for key, stream in sync.streams.items() if stream.loose}

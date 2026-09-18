@@ -935,3 +935,72 @@ def test_cli_reports_failure_without_raising(tmp_path: Path):
     empty = tmp_path / "empty"
     (empty / "nothing").mkdir(parents=True)
     assert main(["--input", str(empty), "--output", str(tmp_path / "out"), "--task", "x"]) == 1
+
+
+def test_a_stream_can_be_paired_without_deciding_usability():
+    """`require_sync: false` keeps the camera and drops only its veto."""
+    from hdf52lerobot.source import PoseStream, SourceEpisode, VideoStream
+
+    fps, frames = 20, 40
+    clock = np.arange(frames) / fps
+
+    def video(key: str, timestamps: np.ndarray) -> VideoStream:
+        return VideoStream(
+            key=key,
+            path=Path(f"{key}.mkv"),
+            timestamps=timestamps,
+            width=8,
+            height=8,
+            frames=len(timestamps),
+        )
+
+    # `loose` starts a full second late, far past any sane gap limit.
+    episode = SourceEpisode(path=Path("ep"))
+    episode.poses["left_tcp"] = PoseStream(
+        key="left_tcp",
+        path=Path("left_tcp.hdf5"),
+        timestamps=clock,
+        values=np.tile(np.array([0.0, 0, 0, 1, 0, 0, 0]), (frames, 1)),
+    )
+    episode.videos["strict"] = video("strict", clock)
+    episode.videos["loose"] = video("loose", clock + 1.0)
+
+    base = ConverterConfig(
+        fps=fps,
+        pair="grid",
+        master_clock="left_tcp",
+        max_sync_gap_frames=2.0,
+        streams=(
+            StreamRule(r"^left_tcp$", "pose", "left_tcp"),
+            StreamRule(r"^strict$", "video", "strict"),
+            StreamRule(r"^loose$", "video", "loose"),
+        ),
+    )
+    with pytest.raises(ValueError, match="loose"):
+        build_sync(episode, base)
+
+    relaxed = replace(
+        base,
+        streams=tuple(
+            replace(rule, require_sync=False) if rule.key == "loose" else rule
+            for rule in base.streams
+        ),
+    )
+    report = build_sync(episode, relaxed)
+    # Still present, still paired, and the drift is reported rather than hidden.
+    assert "loose" in report.streams
+    assert len(report.streams["loose"].indices) == report.length
+    assert any("loose" in message for message in report.unchecked)
+    assert not any("strict" in message for message in report.unchecked)
+
+    # A stream nobody wrote a rule for keeps its veto.
+    assert relaxed.requires_sync("unknown") is True
+
+
+def test_require_sync_is_read_from_the_profile():
+    config = ConverterConfig.from_yaml(
+        Path(__file__).resolve().parent.parent / "configs" / "tacverse_rdt.yaml"
+    )
+    assert config.requires_sync("side") is False
+    assert config.requires_sync("left_wrist") is True
+    assert config.requires_sync("left_tcp") is True

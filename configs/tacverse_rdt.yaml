@@ -80,6 +80,13 @@ streams:
   - pattern: '^head_.*_mvs_mono_.*_libx264\.mkv$'
     kind: video
     key: side
+    # Nothing is timed against this camera -- it watches the bench from a
+    # fixed mount and drives nothing -- and its clock sometimes starts late,
+    # writing zeros for its first ~20 frames before the first real timestamp
+    # lands ~0.7 s in. That is a property of this camera, not evidence that a
+    # recording is bad, and it rejected 0.25% of all recordings for it. The
+    # video is still paired to the grid and stored exactly as before.
+    require_sync: false
   - pattern: '^(?P<side>left|right)_umi_.*_mvs_mono_.*_libx264\.mkv$'
     kind: video
     key: '{side}_wrist'

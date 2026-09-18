@@ -49,6 +49,12 @@ class StreamRule:
         rgb_reference: Name of an entry in ``ConverterConfig.rgb_references``.
             Given one, this camera's overall tone is brought to that reference,
             the way the Xense SDK does at sensor init. Videos only.
+        require_sync: Whether this stream's timing decides that a recording is
+            unusable. False still pairs it to the grid and stores it -- the
+            video comes out as it always did -- but its gaps no longer reject
+            the recording. For a camera nobody is timing against, a clock that
+            starts late is a property of that camera, not evidence that the
+            recording is bad.
     """
 
     pattern: str
@@ -56,6 +62,7 @@ class StreamRule:
     key: str
     transform: tuple[str, ...] = ()
     rgb_reference: str | None = None
+    require_sync: bool = True
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -331,6 +338,17 @@ class ConverterConfig:
         """This stream's tracker -> EEF transform; identity when unconfigured."""
         return self.pose_transforms.get(key, TrackerToEef())
 
+    def requires_sync(self, key: str) -> bool:
+        """Whether a stream's timing can reject a recording.
+
+        Unknown keys require it: a stream nobody wrote a rule for should not
+        quietly stop being checked.
+        """
+        for rule in self.streams:
+            if rule.key == key:
+                return rule.require_sync
+        return True
+
     def task_for(self, episode_name: str) -> str:
         """The task text for one recording directory."""
         return self.tasks.get(episode_name, self.task)
@@ -373,6 +391,7 @@ class ConverterConfig:
                     key=item["key"],
                     transform=tuple(item.get("transform") or ()),
                     rgb_reference=item.get("rgb_reference"),
+                    require_sync=bool(item.get("require_sync", True)),
                 )
                 for item in rules
             )

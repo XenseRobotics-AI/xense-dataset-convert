@@ -103,6 +103,11 @@ class SyncReport:
     the config asks for it."""
     source_length: int = 0
     """Master samples in the recording (equals ``length`` outside ``grid`` mode)."""
+    unchecked: list[str] = field(default_factory=list)
+    """Streams past the gap limit whose timing does not decide usability.
+
+    Reported rather than dropped: a camera drifting far is worth seeing in the
+    log even when it cannot reject the recording."""
 
     def indices_for(self, key: str) -> np.ndarray:
         return self.streams[key].indices
@@ -189,6 +194,7 @@ def build_sync(episode: SourceEpisode, config: ConverterConfig) -> SyncReport:
 
     streams: dict[str, StreamSync] = {}
     violations: list[str] = []
+    unchecked: list[str] = []
     for key, stream in episode.all_streams().items():
         mode, paired = per_iteration[key]
         indices = paired[iteration]
@@ -204,10 +210,15 @@ def build_sync(episode: SourceEpisode, config: ConverterConfig) -> SyncReport:
         )
         if gaps.max() > config.max_sync_gap_s:
             over = int(np.count_nonzero(gaps > config.max_sync_gap_s))
-            violations.append(
+            message = (
                 f"{key}: {over} frame(s) off by up to {gaps.max() * 1000:.1f}ms "
                 f"(limit {config.max_sync_gap_s * 1000:.1f}ms)"
             )
+            if config.requires_sync(key):
+                violations.append(message)
+            else:
+                # Paired and stored like any other camera; just not evidence.
+                unchecked.append(message)
 
     if violations:
         raise ValueError(
@@ -216,6 +227,7 @@ def build_sync(episode: SourceEpisode, config: ConverterConfig) -> SyncReport:
         )
 
     return SyncReport(
+        unchecked=unchecked,
         master_key=config.master_clock,
         length=length,
         fps=config.fps,

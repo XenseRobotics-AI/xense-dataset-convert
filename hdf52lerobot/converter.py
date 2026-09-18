@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
+import math
 from dataclasses import asdict
 import os
 import hashlib
@@ -336,6 +337,43 @@ class Hdf5ToLeRobotConverter:
                 skipped.append(self._skip_record(path, error))
         raise ValueError("No readable recording among the inputs")
 
+    @staticmethod
+    def _gripper_normalization(sources: list[dict[str, Any]]) -> dict[str, Any]:
+        """What a normalized gripper value means, and the spread behind it.
+
+        ``1.0`` is the open end of *this recording's calibration window*, not
+        the jaw's mechanical limit. The two are not the same: the CTAG2F120 the
+        RDT rig uses travels 40.1 degrees (a 2 to 88 mm pad gap), while the
+        windows in the recordings span 15.5 to 29.9 degrees and differ per
+        station and per session. A consumer that maps 1.0 onto the part's
+        mechanical maximum -- a URDF's joint limit, say -- therefore draws a jaw
+        roughly 40% wider open than the hardware ever was.
+
+        So the recovery is per episode and lives with each episode's record;
+        this block is the summary, for a consumer that wants the shape of the
+        thing before reading 4000 rows.
+        """
+        travels: dict[str, list[float]] = {}
+        for record in sources:
+            for key, calibration in record.get("grippers", {}).items():
+                travels.setdefault(key, []).append(calibration["travel_deg"])
+        return {
+            "definition": (
+                "value = clip((angle - closed_deg) / (open_deg - closed_deg), 0, 1); "
+                "0 is closed, 1 is the open end of this recording's calibration "
+                "window, which is narrower than the jaw's mechanical travel"
+            ),
+            "per_episode_key": "episodes[].grippers",
+            "travel_deg": {
+                key: {
+                    "min": round(min(values), 4),
+                    "max": round(max(values), 4),
+                    "episodes": len(values),
+                }
+                for key, values in sorted(travels.items())
+            },
+        }
+
     def _write_sources(
         self, sources: list[dict[str, Any]], skipped: list[dict[str, Any]] | None = None
     ) -> None:
@@ -355,6 +393,7 @@ class Hdf5ToLeRobotConverter:
             "hdf52lerobot_version": __version__,
             "inputs": [str(Path(entry).expanduser().resolve()) for entry in self.inputs],
             "config": config,
+            "gripper_normalization": self._gripper_normalization(sources),
             "episodes": sources,
             "skipped": skipped or [],
         }
@@ -482,6 +521,16 @@ class Hdf5ToLeRobotConverter:
             "first_source_timestamp": float(sync.tick_timestamps[0]),
             "last_source_timestamp": float(sync.tick_timestamps[-1]),
             "files": sorted(stream.path.name for stream in episode.all_streams().values()),
+            "grippers": {
+                key: {
+                    "closed_deg": round(gripper.lo, 4),
+                    "open_deg": round(gripper.hi, 4),
+                    "travel_deg": round(gripper.hi - gripper.lo, 4),
+                    "travel_rad": round(math.radians(gripper.hi - gripper.lo), 6),
+                    "wraps_zero": gripper.lo < 0.0,
+                }
+                for key, gripper in sorted(episode.grippers.items())
+            },
         }
 
 

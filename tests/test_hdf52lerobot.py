@@ -1004,3 +1004,48 @@ def test_require_sync_is_read_from_the_profile():
     assert config.requires_sync("side") is False
     assert config.requires_sync("left_wrist") is True
     assert config.requires_sync("left_tcp") is True
+
+
+def test_sources_records_what_a_normalized_gripper_value_means(dataset: Path):
+    """A normalized 1.0 is the calibration window's open end, not the jaw's.
+
+    Without the window in the dataset a consumer can only assume the jaw's
+    mechanical range, which draws it wider open than the hardware ever was.
+    """
+    document = json.loads((dataset / "meta" / "sources.json").read_text())
+
+    summary = document["gripper_normalization"]
+    assert "calibration" in summary["definition"]
+    assert summary["per_episode_key"] == "episodes[].grippers"
+
+    for record in document["episodes"]:
+        for key, calibration in record["grippers"].items():
+            assert key.endswith("_gripper")
+            assert calibration["travel_deg"] == pytest.approx(
+                calibration["open_deg"] - calibration["closed_deg"], abs=1e-3
+            )
+            assert calibration["travel_rad"] == pytest.approx(
+                np.radians(calibration["travel_deg"]), abs=1e-5
+            )
+            assert calibration["wraps_zero"] is (calibration["closed_deg"] < 0)
+            assert key in summary["travel_deg"]
+            assert summary["travel_deg"][key]["min"] <= calibration["travel_deg"]
+            assert summary["travel_deg"][key]["max"] >= calibration["travel_deg"]
+
+
+def test_a_wrapping_window_is_flagged_as_such():
+    """The five stations whose window straddles zero are worth marking."""
+    from hdf52lerobot.source import GripperStream
+
+    wrapping = GripperStream(
+        key="left_gripper",
+        path=Path("left_umi_032L_openv2_-16.55_10.77.hdf5"),
+        timestamps=np.arange(3, dtype=np.float64),
+        values=np.array([343.45, 0.0, 10.77]),
+        lo=-16.55,
+        hi=10.77,
+    )
+    assert wrapping.lo < 0
+    assert wrapping.hi - wrapping.lo == pytest.approx(27.32)
+    # And the travel, not the mechanical 40.1 degrees, is what 1.0 maps to.
+    assert np.radians(wrapping.hi - wrapping.lo) == pytest.approx(0.4768, abs=1e-4)

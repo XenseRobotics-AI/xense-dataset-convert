@@ -396,3 +396,53 @@ def test_lerobot2mcap_looks_up_the_distribution_by_its_real_name():
         f"lerobot2mcap asks importlib.metadata for {looked_up}, "
         f"but the distribution is named {distribution!r}"
     )
+
+
+def test_no_package_hardcodes_its_version():
+    """A literal here is written into every dataset the package converts.
+
+    `hdf52lerobot.__version__` sat at "0.1.0" through thirteen releases and
+    stamped that into each dataset's `meta/sources.json`, so a consumer trying
+    to tell an old conversion from a new one by version could not. Reading the
+    distribution's metadata keeps it honest; asserting it here is cheap and
+    works without the project installed, which CI is not.
+    """
+    import ast
+
+    root = Path(__file__).resolve().parent.parent
+    for package in ("hdf52lerobot", "mcap2lerobot", "lerobot2zarr", "lerobot2mcap", "rlds2lerobot"):
+        source = (root / package / "__init__.py").read_text()
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Assign):
+                continue
+            names = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if "__version__" not in names:
+                continue
+            # "unknown" is the not-installed fallback, which is honest; a
+            # version-shaped literal is the thing being ruled out.
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                assert node.value.value == "unknown", (
+                    f"{package}/__init__.py hardcodes __version__ = {node.value.value!r}; "
+                    f"read it from the distribution metadata instead"
+                )
+
+
+def test_the_installed_version_matches_pyproject():
+    """Editable installs keep their own metadata; a stale one misreports.
+
+    Refreshed by `pip install -e .`. Skipped when the project is not installed,
+    which is how CI runs.
+    """
+    import re
+    from importlib.metadata import PackageNotFoundError, version
+
+    root = Path(__file__).resolve().parent.parent
+    declared = re.search(r'^version = "([^"]+)"', (root / "pyproject.toml").read_text(), re.M).group(1)
+    try:
+        installed = version("xense-dataset-convert")
+    except PackageNotFoundError:
+        pytest.skip("xense-dataset-convert is not installed")
+    assert installed == declared, (
+        f"installed metadata says {installed}, pyproject says {declared}; "
+        f"rerun `pip install -e . --no-deps` so converted datasets record the right version"
+    )

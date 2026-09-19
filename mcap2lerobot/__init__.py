@@ -3,6 +3,8 @@
 from .config import ConverterConfig
 from .converter import McapToLeRobotConverter
 
-__version__ = "0.1.0"
+from xense_dataset_convert._version import resolve_version
+
+__version__ = resolve_version()
 
 __all__ = ["ConverterConfig", "McapToLeRobotConverter", "__version__"]

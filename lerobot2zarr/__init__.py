@@ -1,6 +1,9 @@
 """Generic LeRobot to Zarr converter."""
 
-__version__ = "0.1.0"
+from xense_dataset_convert._version import resolve_version
+
+__version__ = resolve_version()
+
 
 from .zarr_converter import LeRobotZarrConverter
 

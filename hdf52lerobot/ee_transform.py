@@ -1,4 +1,4 @@
-"""Tracker → EEF rigid transform and world frame for the UMI/Vive rig.
+"""Tracker → EE rigid transform and world frame for the UMI/Vive rig.
 
 Why this exists
 ---------------
@@ -30,7 +30,7 @@ Order, and the trap in it
 The body transform is applied in **raw tracker axes**, so its numbers mean what
 a tape measure on the rig means. The world step is then a **left-multiply, not
 a conjugation**: ``G · R · Gᵀ`` re-labels the body axes as well as the reference
-frame, which would rotate the EEF frame straight back out of the convention the
+frame, which would rotate the EE frame straight back out of the convention the
 first step put it in. (The TacCap code conjugates because there the body frame
 is the device's own and is meant to be re-labelled; its ``APPLY_G_REBASE``
 section is the same trap seen from the other side.)
@@ -113,14 +113,14 @@ AXES: dict[str, np.ndarray] = {
 
 
 @dataclass(frozen=True)
-class TrackerToEef:
+class TrackerToEe:
     """``^Tracker T_EE`` for one pose stream.
 
     Args:
         approach: Tracker axis pointing from the tracker at the jaws. Becomes
-            the EEF frame's ``+Z``.
+            the EE frame's ``+Z``.
         distance: Tracker origin -> two-finger midpoint along that axis, metres.
-        lateral: Offsets perpendicular to it, along the EEF's X and Y, metres.
+        lateral: Offsets perpendicular to it, along the EE's X and Y, metres.
         spin: Rotation about the approach axis in degrees; sets which way the
             jaws open. Only two values are distinct for a parallel jaw.
         measured: True once these came from the rig rather than from the
@@ -154,7 +154,7 @@ class TrackerToEef:
         )
 
     def rotation(self) -> np.ndarray:
-        """EEF axes expressed in tracker axes, as columns.
+        """EE axes expressed in tracker axes, as columns.
 
         ``+Z`` is the approach; X and Y are free up to a rotation about it,
         which is what ``spin`` sets. The seed is the tracker's own X projected
@@ -182,7 +182,7 @@ class TrackerToEef:
         )
 
     @classmethod
-    def from_mapping(cls, raw: dict[str, Any]) -> "TrackerToEef":
+    def from_mapping(cls, raw: dict[str, Any]) -> "TrackerToEe":
         lateral = tuple(float(v) for v in (raw.get("lateral") or (0.0, 0.0)))
         return cls(
             approach=str(raw.get("approach", "+z")),
@@ -196,7 +196,7 @@ class TrackerToEef:
 def transform_pose_block(
     positions: np.ndarray,
     quaternions_wxyz: np.ndarray,
-    body: TrackerToEef,
+    body: TrackerToEe,
     world: np.ndarray | None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply ``^Tracker T_EE`` and the world frame to one pose stream.
@@ -204,7 +204,7 @@ def transform_pose_block(
     Args:
         positions: ``(N, 3)`` tracker positions as recorded.
         quaternions_wxyz: ``(N, 4)`` tracker orientations, scalar first.
-        body: The rig's tracker -> EEF transform.
+        body: The rig's tracker -> EE transform.
         world: World rotation, or None to leave the recorded frame alone.
 
     Returns:

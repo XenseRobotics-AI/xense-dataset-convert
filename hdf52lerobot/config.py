@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from .ee_transform import WORLD_FRAMES, TrackerToEef
+from .ee_transform import WORLD_FRAMES, TrackerToEe
 from .geometry import QUAT_ORDERS
 from .imaging import CHANNEL_ORDER, validate_transforms
 
@@ -247,7 +247,7 @@ class ConverterConfig:
     (TacCap). Off by default so an existing profile keeps behaving exactly as it
     did; the RDT profile turns it on."""
 
-    pose_transforms: dict[str, TrackerToEef] = field(default_factory=dict)
+    tracker_to_ee: dict[str, TrackerToEe] = field(default_factory=dict)
     """Per pose-stream ``^Tracker T_EE``, keyed by stream key (``left_tcp``).
 
     A stream with no entry is written as recorded, which is right only when the
@@ -276,10 +276,10 @@ class ConverterConfig:
             raise ValueError(
                 f"world_frame must be one of {sorted(WORLD_FRAMES)}, got {self.world_frame!r}"
             )
-        unknown = set(self.pose_transforms) - set(self.state_layout)
+        unknown = set(self.tracker_to_ee) - set(self.state_layout)
         if unknown:
             raise ValueError(
-                f"pose_transforms names {sorted(unknown)}, which state_layout does not contain"
+                f"tracker_to_ee names {sorted(unknown)}, which state_layout does not contain"
             )
         if self.codec_threads < 0:
             raise ValueError("codec_threads must be 0 (auto) or positive")
@@ -334,9 +334,9 @@ class ConverterConfig:
         """The world rotation to apply, or None for ``world_frame: none``."""
         return WORLD_FRAMES[self.world_frame]
 
-    def pose_transform_for(self, key: str) -> TrackerToEef:
-        """This stream's tracker -> EEF transform; identity when unconfigured."""
-        return self.pose_transforms.get(key, TrackerToEef())
+    def tracker_to_ee_for(self, key: str) -> TrackerToEe:
+        """This stream's tracker -> EE transform; identity when unconfigured."""
+        return self.tracker_to_ee.get(key, TrackerToEe())
 
     def requires_sync(self, key: str) -> bool:
         """Whether a stream's timing can reject a recording.
@@ -406,10 +406,16 @@ class ConverterConfig:
             raw["video_options"] = {
                 str(key): str(value) for key, value in dict(raw["video_options"]).items()
             }
-        if "pose_transforms" in raw and raw["pose_transforms"] is not None:
-            raw["pose_transforms"] = {
-                str(key): TrackerToEef.from_mapping(dict(value))
-                for key, value in dict(raw["pose_transforms"]).items()
+        # `pose_transforms` was this key's first name, before the fork's own
+        # `tracker_to_ee` -- the name the datasets carry -- was adopted.
+        if "pose_transforms" in raw:
+            if "tracker_to_ee" in raw:
+                raise ValueError("give tracker_to_ee or pose_transforms, not both")
+            raw["tracker_to_ee"] = raw.pop("pose_transforms")
+        if "tracker_to_ee" in raw and raw["tracker_to_ee"] is not None:
+            raw["tracker_to_ee"] = {
+                str(key): TrackerToEe.from_mapping(dict(value))
+                for key, value in dict(raw["tracker_to_ee"]).items()
             }
         if "tasks" in raw and raw["tasks"] is not None:
             raw["tasks"] = {str(key): str(value) for key, value in dict(raw["tasks"]).items()}

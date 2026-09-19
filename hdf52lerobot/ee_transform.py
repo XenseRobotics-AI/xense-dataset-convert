@@ -12,13 +12,25 @@ of the capture rig rather than of any consumer:
 * the **world frame**: SteamVR is Y-up, the Xense convention is X forward,
   Y left, Z up.
 
-The TacCap rig applies both upstream — ``Pico4TrackerReader`` conjugates the
-world frame and ``robots/taccap_gripper/ee_transform.py`` right-multiplies a
-CAD-measured ``^Tracker T_EE`` before its HDF5 is written — which is why that
-path needs nothing here. The RDT capture stack, inherited from RDT2/UMI, does
-neither: upstream never needed a world frame because their model only ever sees
-poses re-expressed relative to the current frame, so nothing there notices that
-the world is Y-up.
+The TacCap datasets do not need any of this, for a simpler reason than a
+transform: there is no tracker in their recorded pose. Those rigs are robot
+arms -- ``robots/bi_flexiv_rizon4_rt`` and its siblings in the fork -- whose
+``{side}_tcp`` comes from the arm's own kinematics and is a TCP in the robot's
+own base frame. A Pico 4 appears in that stack as the *teleoperator*, the thing
+a human waves to command the arm, not as the source of the pose that gets
+written.
+
+(``teleoperators/pico4/tracker.py`` does carry a ``tracker_to_ee`` rigid mount
+transform, and an earlier version of this note claimed the TacCap path applied
+a CAD-measured one. That was wrong, and worth stating plainly because other
+teams read it: the parameters default to identity, no configuration in the fork
+sets them, the production teleop path imports ``teleop_pico4`` rather than that
+reader, and the file this note used to name does not exist.)
+
+The RDT capture stack, inherited from RDT2/UMI, is the one with a tracker in
+the recorded pose and no transform on it. Upstream never needed a world frame
+because their model only ever sees poses re-expressed relative to the current
+frame, so nothing there notices that the world is Y-up.
 
 Order, and the trap in it
 -------------------------

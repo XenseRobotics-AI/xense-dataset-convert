@@ -61,7 +61,7 @@ def warn_untransformed_poses(config: ConverterConfig, logger: Any) -> None:
     """Say so when an RDT conversion is about to write raw tracker poses.
 
     `bi_rdt_gripper` recordings carry the Vive tracker's pose under a key named
-    `{side}_tcp`. Converting them with no `pose_transforms` is what produced
+    `{side}_tcp`. Converting them with no `tracker_to_ee` is what produced
     every dataset of this rig so far, and it is silent -- the column names look
     right either way.
     """
@@ -70,18 +70,18 @@ def warn_untransformed_poses(config: ConverterConfig, logger: Any) -> None:
     missing = [
         key
         for key in config.state_layout
-        if key.endswith("_tcp") and config.pose_transform_for(key).is_identity
+        if key.endswith("_tcp") and config.tracker_to_ee_for(key).is_identity
     ]
     if missing:
         logger.warn(
-            f"{', '.join(missing)}: no pose_transforms entry, so the Vive tracker's own pose "
+            f"{', '.join(missing)}: no tracker_to_ee entry, so the Vive tracker's own pose "
             f"is being written under a name that claims to be a TCP. See "
             f"hdf52lerobot/ee_transform.py."
         )
-    elif not all(config.pose_transform_for(key).measured for key in config.state_layout
+    elif not all(config.tracker_to_ee_for(key).measured for key in config.state_layout
                  if key.endswith("_tcp")):
         logger.warn(
-            "tracker->EEF offsets are marked provisional (measured: false); poses are placed "
+            "tracker->EE offsets are marked provisional (measured: false); poses are placed "
             "at roughly the right scale but not to the millimetre."
         )
 
@@ -98,7 +98,7 @@ def build_state(episode: SourceEpisode, sync: SyncReport, config: ConverterConfi
             positions, rotations = transform_pose_block(
                 values[:, :3],
                 to_wxyz(values[:, 3:7], config.quat_order),
-                config.pose_transform_for(key),
+                config.tracker_to_ee_for(key),
                 config.world_matrix(),
             )
             blocks.append(np.concatenate([positions, rotations], axis=1))

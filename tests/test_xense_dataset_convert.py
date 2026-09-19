@@ -9,6 +9,7 @@ replaced, so no suite here needs a dataset, lerobot, or torch.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import types
@@ -425,6 +426,50 @@ def test_no_package_hardcodes_its_version():
                     f"{package}/__init__.py hardcodes __version__ = {node.value.value!r}; "
                     f"read it from the distribution metadata instead"
                 )
+
+
+def test_a_submodule_checkout_still_knows_its_version():
+    """No metadata is the case this repo is deliberately usable in.
+
+    Vendored as a git submodule, pinned to a commit, never pip-installed --
+    which is how TacFlow-Engine consumes it, and it puts this string in a
+    provenance field. "0+unknown" there means an ingest event cannot say which
+    converter produced a dataset, so the checkout's own pyproject is read
+    instead.
+    """
+    import importlib.metadata as metadata
+
+    from xense_dataset_convert import _version
+
+    real = metadata.version
+
+    def absent(name: str) -> str:
+        if name == _version.DISTRIBUTION:
+            raise metadata.PackageNotFoundError(name)
+        return real(name)
+
+    root = Path(__file__).resolve().parent.parent
+    declared = re.search(r'^version = "([^"]+)"', (root / "pyproject.toml").read_text(), re.M).group(1)
+
+    metadata.version = absent
+    try:
+        assert _version.resolve_version() == declared
+    finally:
+        metadata.version = real
+
+
+def test_every_package_reports_the_same_version():
+    """One distribution, so one version -- whichever package is asked."""
+    import hdf52lerobot
+    import lerobot2zarr
+    import mcap2lerobot
+    import xense_dataset_convert
+
+    versions = {
+        module.__name__: module.__version__
+        for module in (xense_dataset_convert, hdf52lerobot, mcap2lerobot, lerobot2zarr)
+    }
+    assert len(set(versions.values())) == 1, versions
 
 
 def test_the_installed_version_matches_pyproject():

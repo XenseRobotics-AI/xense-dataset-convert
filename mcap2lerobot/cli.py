@@ -83,8 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--export-action",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="For DAS-UMI, write action[t] = observation.state[t+1]",
+        default=None,
+        help="For DAS-UMI, write next-frame absolute action (default: enabled)",
     )
     parser.add_argument(
         "--report-dir",

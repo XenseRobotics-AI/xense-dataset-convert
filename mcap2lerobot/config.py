@@ -52,7 +52,7 @@ class ConverterConfig:
     profile: str = AUTO_PROFILE
     config: Path | None = None
     check_only: bool = False
-    export_action: bool = False
+    export_action: bool | None = None
     report_dir: Path | None = None
 
     def __post_init__(self) -> None:

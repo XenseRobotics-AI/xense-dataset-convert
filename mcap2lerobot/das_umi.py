@@ -44,6 +44,12 @@ IMU_NAMES = [
 ]
 
 
+GRIPPER_UNITS = (
+    "Encoder values pass through unchanged except float32 conversion; assumed radians, "
+    "units unconfirmed (单位待确认), unlike TacCap normalized gripper opening."
+)
+
+
 @dataclass(frozen=True)
 class StreamRule:
     key: str
@@ -299,7 +305,7 @@ def _classify_topic(
 def preflight_das_umi(
     path: Path,
     config: DasUmiConfig,
-    export_action: bool = False,
+    export_action: bool | None = None,
     video_decoder_factory: Callable[[str], Any] = VideoStreamDecoder,
 ) -> PreflightResult:
     started = time.monotonic()
@@ -503,7 +509,13 @@ def preflight_das_umi(
                 + np.arange(count, dtype=np.int64) * 1_000_000_000 // DAS_UMI_FPS
             )
             episode = _build_episode(
-                source, config, streams, ticks, export_action, issues, notices
+                source,
+                config,
+                streams,
+                ticks,
+                export_action is not False,
+                issues,
+                notices,
             )
             output_span = _check_sync(config, streams, ticks, issues)
 
@@ -564,6 +576,9 @@ def _build_episode(
                 TimedArray(int(timestamp), value)
                 for timestamp, value in zip(data.times_ns, data.values)
             ]
+            if rule.kind == "magnetic":
+                episode.hidden_observations.add(rule.feature)
+                continue
             names = (
                 POSE_NAMES
                 if rule.kind == "pose"
@@ -591,12 +606,13 @@ def _build_episode(
     }
     state_names: list[str] = []
     state_parts: list[np.ndarray] = []
+    state_components: dict[str, list[dict[str, Any]]] = {}
     prefixes = {
         "left_pose": "left_hand",
-        "left_magnetic": "left_magnetic",
+        "left_magnetic": "left_gripper",
         "right_pose": "right_hand",
-        "right_magnetic": "right_magnetic",
-        "head_pose": "head",
+        "right_magnetic": "right_gripper",
+        "head_pose": "head_camera",
     }
     for block in block_order:
         data = by_block.get(block)
@@ -605,7 +621,11 @@ def _build_episode(
         index = _nearest_indices(data.times_ns, ticks)
         values = np.stack(data.values)[index]
         state_parts.append(values)
-        component_names = POSE_NAMES if data.rule.kind == "pose" else ["raw_value"]
+        component_names = POSE_NAMES if data.rule.kind == "pose" else ["pos"]
+        state_components[data.rule.key] = [
+            {"index": len(state_names) + i, "name": f"{prefixes[block]}.{name}"}
+            for i, name in enumerate(component_names)
+        ]
         state_names.extend(f"{prefixes[block]}.{name}" for name in component_names)
     if state_parts:
         matrix = np.concatenate(state_parts, axis=1).astype(np.float32)
@@ -629,14 +649,15 @@ def _build_episode(
                 "names": state_names,
             }
     elif export_action:
-        notices.append(
-            "action requested but no state blocks are available; action was not generated"
-        )
+        issues.append("action requested but no state blocks are available")
     episode.info = {
         "fps": DAS_UMI_FPS,
         "robot_type": config.robot_type,
         "task": config.task,
         "features": feature_specs,
+        "state_components": state_components,
+        "export_action": export_action,
+        "action_tail_rows_dropped": int(export_action and bool(state_parts)),
     }
     return episode
 
@@ -993,6 +1014,23 @@ def write_conversion_report(
         f"Episodes: {len(results)}",
         f"Frames: {frames}",
     ]
+    action_enabled = any(
+        (result.episode.info or {}).get("export_action", False)
+        for result in results
+        if result.episode is not None
+    )
+    dropped = sum(
+        (result.episode.info or {}).get("action_tail_rows_dropped", 0)
+        for result in results
+        if result.episode is not None
+    )
+    lines += [
+        f"Action: {'enabled (next-frame absolute state)' if action_enabled else 'disabled'}",
+        f"Action tail rows dropped: {dropped} (one per enabled episode)",
+        f"Gripper units: {GRIPPER_UNITS}",
+        "Head: world pose; rotation [R00,R10,R20,R01,R11,R21]; no TacCap camera-frame calibration implied.",
+        "Topic mapping: `meta/das_umi_topic_mapping.json` (created with dataset)",
+    ]
     if output is not None:
         lines.append(f"Output: `{output}`")
     if temporary is not None:
@@ -1007,7 +1045,9 @@ def write_conversion_report(
             "- LeRobot load and row count: PASS",
             "- Integer 30 Hz timelines: PASS",
             "- Video decode count and resolution: PASS",
-            "- Shifted action equality (when present): PASS",
+            "- Shifted action equality (all rows, including final target): PASS"
+            if action_enabled
+            else "- Shifted action equality: N/A (不适用; action disabled)",
         ]
     elif status.startswith("CHECK ONLY"):
         lines.append("- Output validation not run; preflight only.")
@@ -1045,6 +1085,75 @@ def write_calibration_metadata(root: Path, results: list[PreflightResult]) -> No
     )
 
 
+def topic_mapping(results: list[PreflightResult]) -> dict[str, Any]:
+    """Describe actual exported fields and state components for each source topic."""
+    from .converter import (
+        SOURCE_TIMESTAMP_FEATURE,
+        build_features,
+        source_audit_features,
+    )
+
+    episodes = []
+    for result in results:
+        episode = result.episode
+        if episode is None:
+            continue
+        features = build_features(episode)
+        components = (episode.info or {}).get("state_components", {})
+        topics = []
+        for data in result.streams.values():
+            rule = data.rule
+            if not data.times_ns.size:
+                continue
+            targets: list[dict[str, Any]] = []
+            if rule.feature in features:
+                targets.append({"field": rule.feature})
+            for field_name in ("observation.state", "action"):
+                if field_name in features and rule.key in components:
+                    targets.append(
+                        {
+                            "field": field_name,
+                            "components": components[rule.key],
+                            "alignment": "next_frame"
+                            if field_name == "action"
+                            else "current_frame",
+                        }
+                    )
+            timestamp, index = source_audit_features(rule.key)
+            targets.extend([{"field": timestamp}, {"field": index}])
+            topics.append(
+                {
+                    "topic": f"/{rule.topic}",
+                    "stream": rule.key,
+                    "targets": targets,
+                    "source_clock": data.clock,
+                    "audit_alignment": "current observation row; action uses the next aligned frame",
+                }
+            )
+        episodes.append({"source": str(result.path), "topics": topics})
+    return {
+        "description": "Source topics to exported fields; action is next-frame absolute state.",
+        "gripper_units": GRIPPER_UNITS,
+        "head_pose": "World pose, rotation [R00,R10,R20,R01,R11,R21]; no TacCap camera-frame calibration implied.",
+        "derived_fields": [
+            {
+                "field": SOURCE_TIMESTAMP_FEATURE,
+                "description": "Derived integer 30 Hz target grid, not a source topic timestamp.",
+            }
+        ],
+        "episodes": episodes,
+    }
+
+
+def write_topic_mapping(root: Path, results: list[PreflightResult]) -> None:
+    meta = root / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "das_umi_topic_mapping.json").write_text(
+        json.dumps(topic_mapping(results), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _failed_result(path: Path, error: Exception) -> PreflightResult:
     return PreflightResult(
         path=path,
@@ -1060,7 +1169,12 @@ def _failed_result(path: Path, error: Exception) -> PreflightResult:
     )
 
 
-def verify_tabular_output(root: Path, expected_frames: int, repo_id: str) -> None:
+def verify_tabular_output(
+    root: Path,
+    expected_frames: int,
+    repo_id: str,
+    episodes: list[EpisodeData] | None = None,
+) -> None:
     """Load the published layout and check parquet rows, grid, and shifted action."""
     import pyarrow.parquet as pq
 
@@ -1081,10 +1195,32 @@ def verify_tabular_output(root: Path, expected_frames: int, repo_id: str) -> Non
         ).reshape(-1)
     else:
         episode_ids = np.zeros(rows, dtype=np.int64)
+    if episodes is not None and set(episode_ids.tolist()) != set(range(len(episodes))):
+        raise ValueError("output episode IDs do not match preflight episodes")
     for episode_id in dict.fromkeys(episode_ids.tolist()):
         mask = np.flatnonzero(episode_ids == episode_id)
         if not len(mask):
             continue
+        if episodes is not None:
+            expected_episode = episodes[episode_id]
+            if len(mask) != len(expected_episode.timeline_ns):
+                raise ValueError("episode row count does not match preflight")
+            for key, samples in (
+                ("observation.state", expected_episode.states),
+                ("action", expected_episode.actions),
+            ):
+                if not samples:
+                    if key in columns:
+                        raise ValueError(f"unexpected {key} column")
+                    continue
+                if key not in columns:
+                    raise ValueError(f"missing {key} column")
+                actual = np.asarray(table[key].to_pylist(), dtype=np.float32)[mask]
+                expected_values = np.stack([sample.value for sample in samples])
+                if not np.array_equal(actual, expected_values):
+                    raise ValueError(
+                        f"{key} differs from aligned source, including final row"
+                    )
         if "observation.source_timestamp" in columns:
             source = np.asarray(
                 table["observation.source_timestamp"].to_pylist(), dtype=np.int64
@@ -1107,6 +1243,24 @@ def verify_tabular_output(root: Path, expected_frames: int, repo_id: str) -> Non
             action = np.asarray(table["action"].to_pylist(), dtype=np.float32)[mask]
             if len(state) > 1 and not np.array_equal(action[:-1], state[1:]):
                 raise ValueError("action[t] does not equal observation.state[t+1]")
+    mapping_path = root / "meta" / "das_umi_topic_mapping.json"
+    mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+    info = json.loads((root / "meta" / "info.json").read_text(encoding="utf-8"))
+    features = info["features"]
+    for entry in mapping["derived_fields"] + [
+        target
+        for episode_mapping in mapping["episodes"]
+        for topic in episode_mapping["topics"]
+        for target in topic["targets"]
+    ]:
+        key = entry["field"]
+        if key not in features or (
+            features[key]["dtype"] != "video" and key not in columns
+        ):
+            raise ValueError(f"topic mapping target is not exported: {key}")
+        for component in entry.get("components", []):
+            if features[key]["names"][component["index"]] != component["name"]:
+                raise ValueError(f"topic mapping component mismatch: {key}")
     try:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -1256,8 +1410,9 @@ def convert_das_umi(owner: Any, mcap_files: list[Path]) -> Path:
         )
         if owner._verify_videos:
             write_calibration_metadata(working_root, results)
+            write_topic_mapping(working_root, results)
             verify_video_outputs(working_root, features, total_frames)
-            verify_tabular_output(working_root, total_frames, owner.repo_id)
+            verify_tabular_output(working_root, total_frames, owner.repo_id, concrete)
             os.replace(working_root, owner.output_root)
             assert temporary_parent is not None
             temporary_parent.rmdir()

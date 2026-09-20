@@ -108,7 +108,13 @@ def _classes():
     }
 
 
-def _write(path: Path, omit: str | None = None, corrupt_prefix: bool = False):
+def _write(
+    path: Path,
+    omit: str | None = None,
+    corrupt_prefix: bool = False,
+    short: bool = False,
+    value_offset: float = 0,
+):
     from mcap.writer import Writer
 
     schema_data, cls = _classes()
@@ -137,7 +143,7 @@ def _write(path: Path, omit: str | None = None, corrupt_prefix: bool = False):
                 if topic_index < 6
                 else (topic_index - 5) * 1_000_000
             )
-            for index in range(7):
+            for index in range(2 if short else 7):
                 timestamp = base + index * 1_000_000_000 // 30 + offset
                 payload = cls["CompressedImage"](
                     data=b"bad"
@@ -156,7 +162,7 @@ def _write(path: Path, omit: str | None = None, corrupt_prefix: bool = False):
             channel = writer.register_channel(
                 topic, "protobuf", schemas["IMUMeasurement"]
             )
-            for index in range(41):
+            for index in range(7 if short else 41):
                 timestamp = base + index * 5_000_000
                 payload = cls["IMUMeasurement"]()
                 payload.header.timestamp = timestamp
@@ -180,9 +186,11 @@ def _write(path: Path, omit: str | None = None, corrupt_prefix: bool = False):
             channel = writer.register_channel(
                 topic, "protobuf", schemas["MagneticEncoderMeasurement"]
             )
-            for index in range(11):
+            for index in range(2 if short else 11):
                 timestamp = base + index * 20_000_000
-                payload = cls["MagneticEncoderMeasurement"](value=index + 0.25)
+                payload = cls["MagneticEncoderMeasurement"](
+                    value=value_offset + index + 0.25
+                )
                 payload.header.timestamp = timestamp
                 payload.header.sequence_num = index
                 writer.add_message(
@@ -192,7 +200,7 @@ def _write(path: Path, omit: str | None = None, corrupt_prefix: bool = False):
             if topic == omit:
                 continue
             channel = writer.register_channel(topic, "protobuf", schemas["PoseInFrame"])
-            for index in range(7):
+            for index in range(2 if short else 7):
                 timestamp = base + index * 1_000_000_000 // 30
                 payload = cls["PoseInFrame"](pose_valid=True)
                 payload.header.timestamp = timestamp
@@ -228,8 +236,8 @@ def test_das_umi_preflight_grid_state_action_and_streaming(tmp_path):
     assert np.array_equal(episode.timeline_ns, expected_grid.astype(np.int64))
 
     features = build_features(episode)
-    assert features["observation.state"]["names"][0] == "left_magnetic.raw_value"
-    assert features["observation.state"]["names"][-1] == "head.r6"
+    assert features["observation.state"]["names"][0] == "left_gripper.pos"
+    assert features["observation.state"]["names"][-1] == "head_camera.r6"
     assert features["action"]["names"] == features["observation.state"]["names"]
     assert "observation.source_timestamp.left_wrist" in features
     assert "observation.source_index.right_wrist" in features
@@ -254,7 +262,7 @@ def test_das_umi_missing_finger_sensor_is_a_reportable_failure(tmp_path):
     assert "robot2/sensor/camera0/compressed" in result.inventory
 
 
-def test_das_umi_pose_uses_matrix_columns_and_default_has_no_action(tmp_path):
+def test_das_umi_pose_uses_matrix_columns_and_default_has_action(tmp_path):
     path = tmp_path / "merged.mcap"
     _write(path)
     result = preflight_das_umi(
@@ -263,7 +271,7 @@ def test_das_umi_pose_uses_matrix_columns_and_default_has_no_action(tmp_path):
     assert result.passed
     episode = result.episode
     assert episode is not None
-    assert not episode.actions
+    assert episode.actions
     # State is left encoder, right encoder, then identity head rotation. The
     # first two matrix columns flatten to [1, 0, 0, 0, 1, 0].
     assert episode.states[0].value[5:].tolist() == [1, 0, 0, 0, 1, 0]
@@ -288,3 +296,173 @@ def test_rejected_preflight_writes_reports_but_not_output(tmp_path):
     assert not output.exists()
     assert "Result: FAIL" in (reports / "preflight.md").read_text()
     assert "NOT RUN" in (reports / "conversion.md").read_text()
+
+
+@pytest.mark.parametrize("enabled", [None, True, False])
+def test_training_vectors_and_topic_mapping(tmp_path, enabled):
+    import json
+    from dataclasses import replace
+
+    from mcap2lerobot.das_umi import topic_mapping, write_topic_mapping
+
+    path = tmp_path / "merged.mcap"
+    _write(path)
+    config = load_das_umi_config(None)
+    # Mapping must follow configuration overrides, not hard-coded output names.
+    config = replace(
+        config,
+        streams=tuple(
+            replace(rule, feature="observation.imu.custom")
+            if rule.key == "ego_imu"
+            else rule
+            for rule in config.streams
+        ),
+    )
+    full = preflight_das_umi(path, config, False, FakeVideoDecoder).episode
+    result = preflight_das_umi(path, config, enabled, FakeVideoDecoder)
+    assert result.passed, result.issues
+    episode = result.episode
+    features = build_features(episode)
+    names = ["left_gripper.pos", "right_gripper.pos"] + [
+        f"head_camera.{name}"
+        for name in ("x", "y", "z", "r1", "r2", "r3", "r4", "r5", "r6")
+    ]
+    assert features["observation.state"] == {
+        "dtype": "float32",
+        "shape": (11,),
+        "names": names,
+    }
+    all_states = np.stack([s.value for s in full.states])
+    expected = all_states if enabled is False else all_states[:-1]
+    np.testing.assert_array_equal(np.stack([s.value for s in episode.states]), expected)
+    if enabled is False:
+        assert not episode.actions and "action" not in features
+    else:
+        np.testing.assert_array_equal(
+            np.stack([s.value for s in episode.actions]), all_states[1:]
+        )
+        assert features["action"] == features["observation.state"]
+    for i, label in enumerate(("left_magnetic", "right_magnetic")):
+        data = result.streams[label]
+        nearest = np.abs(data.times_ns[:, None] - episode.timeline_ns).argmin(axis=0)
+        np.testing.assert_array_equal(expected[:, i], np.stack(data.values)[nearest, 0])
+        assert f"observation.source_timestamp.{label}" in features
+        assert f"observation.source_index.{label}" in features
+    assert not any(key.startswith("observation.magnetic.") for key in features)
+    assert len(episode.hidden_observations) == 2
+    mapping = topic_mapping([result])
+    write_topic_mapping(tmp_path, [result])
+    assert (
+        json.loads((tmp_path / "meta/das_umi_topic_mapping.json").read_text())
+        == mapping
+    )
+    assert "topic" not in mapping["derived_fields"][0]
+    topics = mapping["episodes"][0]["topics"]
+    assert len(topics) == 15
+    for topic in topics:
+        for target in topic["targets"]:
+            spec = features[target["field"]]
+            for component in target.get("components", []):
+                assert spec["names"][component["index"]] == component["name"]
+            if target["field"] == "action":
+                assert enabled is not False and target["alignment"] == "next_frame"
+    assert any(t["field"] == "observation.imu.custom" for t in topics[8]["targets"])
+    assert sum(
+        t["field"] == "action" for topic in topics for t in topic["targets"]
+    ) == (0 if enabled is False else 3)
+
+
+def test_single_aligned_row_requires_observation_only(tmp_path):
+    path = tmp_path / "short.mcap"
+    _write(path, short=True)
+    config = load_das_umi_config(None)
+    result = preflight_das_umi(path, config, video_decoder_factory=FakeVideoDecoder)
+    assert not result.passed
+    assert "action requires at least two aligned rows" in result.issues
+    result = preflight_das_umi(path, config, False, FakeVideoDecoder)
+    assert result.passed, result.issues
+    assert len(result.episode.states) == 1
+
+
+@pytest.fixture
+def fake_video_pipeline(monkeypatch):
+    import mcap2lerobot.das_umi as module
+
+    real_preflight = module.preflight_das_umi
+    monkeypatch.setattr(
+        module,
+        "preflight_das_umi",
+        lambda *args, **kwargs: real_preflight(
+            *args, **kwargs, video_decoder_factory=FakeVideoDecoder
+        ),
+    )
+    monkeypatch.setattr(
+        module, "DasUmiEpisodeReader", lambda: DasUmiEpisodeReader(FakeVideoDecoder)
+    )
+
+
+@pytest.mark.parametrize("enabled", [None, True, False])
+@pytest.mark.parametrize("entrypoint", ["direct", "cli", "facade"])
+def test_batch_entrypoints_match_and_never_cross_episodes(
+    tmp_path, monkeypatch, fake_video_pipeline, enabled, entrypoint
+):
+    from test_mcap2lerobot import FakeDataset
+
+    from mcap2lerobot import cli
+    from mcap2lerobot.converter import McapToLeRobotConverter
+    from xense_dataset_convert import Format, convert
+
+    paths = [tmp_path / f"episode{i}.mcap" for i in range(2)]
+    for i, path in enumerate(paths):
+        _write(path, value_offset=100 * i)
+    seen = []
+    original_init = McapToLeRobotConverter.__init__
+
+    def factory(**kwargs):
+        dataset = FakeDataset(kwargs)
+        seen.append(dataset)
+        return dataset
+
+    def init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs, dataset_factory=factory)
+
+    monkeypatch.setattr(McapToLeRobotConverter, "__init__", init)
+    output = tmp_path / "dataset"
+    options = {} if enabled is None else {"export_action": enabled}
+    if entrypoint == "direct":
+        McapToLeRobotConverter(
+            paths, output, "local/test", ConverterConfig(**options)
+        ).convert()
+    elif entrypoint == "facade":
+        convert(Format.MCAP, Format.LEROBOT, inputs=paths, output=output, **options)
+    else:
+        args = [str(p) for p in paths] + ["-o", str(output)]
+        if enabled is not None:
+            args += ["--export-action" if enabled else "--no-export-action"]
+        monkeypatch.setattr("sys.argv", ["mcap2lerobot", *args])
+        assert cli.main() == 0
+    dataset = seen[0]
+    assert dataset.finalized and len(dataset.episodes) == 2
+    for path, frames in zip(paths, dataset.episodes):
+        full = preflight_das_umi(
+            path, load_das_umi_config(None), False, FakeVideoDecoder
+        ).episode
+        assert len(frames) == len(full.states) - int(enabled is not False)
+        for i, frame in enumerate(frames):
+            np.testing.assert_array_equal(
+                frame["observation.state"], full.states[i].value
+            )
+            if enabled is not False:
+                np.testing.assert_array_equal(frame["action"], full.states[i + 1].value)
+            else:
+                assert "action" not in frame
+            assert not any(key.startswith("observation.magnetic.") for key in frame)
+            assert "observation.source_index.left_magnetic" in frame
+            assert sum(key.startswith("observation.images.") for key in frame) == 8
+    report = (tmp_path / "dataset_reports/conversion.md").read_text()
+    assert f"Action tail rows dropped: {0 if enabled is False else 2}" in report
+    assert (
+        "N/A (不适用" in report
+        if enabled is False
+        else "including final target): PASS" in report
+    )

@@ -89,31 +89,63 @@ T[k] = start + floor(k * 1,000,000,000 / 30)
 The eight video features are the existing
 `observation.images.camera0` … `camera5` plus
 `observation.images.left_wrist` and `right_wrist`. The three IMUs are exported
-as `observation.imu`, `.left_wrist`, and `.right_wrist`. Encoder readings keep
-their source value as `observation.magnetic.<side>.raw_value`; their physical
-unit has not been verified and they are not presented as normalized jaw width.
-Configured `PoseInFrame` streams are exported as XYZ plus the first two columns
-of the rotation matrix (`r1` … `r6`), without a coordinate-frame transform.
-World and relative poses remain separate features, and the head block of state
-uses the world pose.
+as `observation.imu`, `.left_wrist`, and `.right_wrist`. World and relative
+head poses remain separate XYZ + 6D rotation features. Rotation uses matrix
+columns `[R00,R10,R20,R01,R11,R21]`, without a coordinate-frame transform.
 
-`observation.state` follows the TacVerse order, omitting unavailable optional
-blocks rather than filling them with zeros:
+By default, `observation.state` and `action` are float32 vectors with these
+same 11 names, in order:
+
+| Indices | Names | Source |
+|---|---|---|
+| 0 | `left_gripper.pos` | Left encoder |
+| 1 | `right_gripper.pos` | Right encoder |
+| 2–4 | `head_camera.x`, `.y`, `.z` | Head world position |
+| 5–10 | `head_camera.r1` … `.r6` | Head world rotation |
+
+Encoder values pass through unchanged except for float32 conversion. They are
+provisionally interpreted as radians: **units unconfirmed / 单位待确认**, unlike
+TacCap normalized gripper opening. No normalization or jaw-distance conversion
+is applied. Duplicate `observation.magnetic.left/right.raw_value` columns are
+no longer exported; encoder samples remain available internally for alignment
+and their source timestamp/index columns are retained. Matching field names
+does not imply calibration to the TacCap camera coordinate frame.
+
+For each episode, first align the complete sequence `S[0…N-1]`, then export:
 
 ```text
-left hand pose, left raw encoder, right hand pose, right raw encoder, head pose
+observation.state = S[0…N-2]
+action            = S[1…N-1]
 ```
 
-With the default merged capture (no hand-pose topics) this is 11 values: two
-raw encoder values and a 9D head pose. Configuring both optional hand poses
-makes it 29 values. By default no action is fabricated. With `--export-action`,
-`action[t] = observation.state[t+1]`; the last row is dropped, dimensions and
-names match state, and pairing never crosses an episode boundary.
+Action is the next-frame **absolute state**, not a delta. The final observation
+row, including its images and auxiliary fields, is dropped because it has no
+next-frame target. Episodes with fewer than two aligned rows fail preflight.
+Use `--no-export-action` (Python: `export_action=False`) to retain all aligned
+rows as observations only. Omitted/`None`, explicit `True`, and explicit `False`
+are handled consistently by CLI, Python facade, and `ConverterConfig`; the
+default-on rule applies only to DAS-UMI.
 
-`observation.source_timestamp` contains the target grid time. Every exported
-stream also has `observation.source_timestamp.<stream>` and
-`observation.source_index.<stream>`, recording the actual selected acquisition
-time and original MCAP message ordinal.
+No hand TCP is generated, no external service is called, and missing pose
+blocks are not filled with zeros. Existing optional hand-pose configuration
+remains supported (29 values with both hand poses). The eight images, three
+IMUs, and independent head poses do not extend the default training vector.
+
+`observation.source_timestamp` contains the derived target grid time. Every
+sampled stream also has `observation.source_timestamp.<stream>` and
+`observation.source_index.<stream>`, recording its current observation row's
+selected acquisition time and original MCAP message ordinal.
+`meta/das_umi_topic_mapping.json` lists each actual source topic's exported
+fields, audit columns, and state/action component names and indices; action
+components explicitly use the next aligned frame. Disabling action removes
+its mapping entries. The mapping identifies grid time as derived, with no
+source topic. Calibration remains in `meta/das_umi_calibration.json`; preflight
+reports list unconverted topics. LeRobot v3 data/video path templates, device
+type, camera views, and image resolutions are unchanged.
+
+Conversion reports include the vector layout, action setting, tail row count,
+gripper unit assumption, mapping path, and validation results (action validation
+is N/A when disabled).
 
 ## DAS-UMI preflight and reports
 
@@ -171,18 +203,18 @@ mcap2lerobot output/59214a9e/merged_output_ego_vio.mcap \
   -o ./59214a9e_lerobot --profile das-umi --check-only
 ```
 
-Export observations without action (the default):
+Export observations without action:
 
 ```bash
 mcap2lerobot output/59214a9e/merged_output_ego_vio.mcap \
   -o ./59214a9e_lerobot --config configs/das_umi.yaml --no-export-action
 ```
 
-Export observations plus one-step-ahead action:
+Export the default training observations and next-frame absolute action:
 
 ```bash
 mcap2lerobot output/59214a9e/merged_output_ego_vio.mcap \
-  -o ./59214a9e_lerobot_action --export-action \
+  -o ./59214a9e_lerobot_action --profile das-umi \
   --report-dir ./59214a9e_reports
 ```
 
@@ -211,7 +243,7 @@ convert(
     output="59214a9e_lerobot",
     profile="das-umi",
     config="configs/das_umi.yaml",
-    export_action=True,
+    # export_action=False keeps all rows as observations only.
 )
 ```
 

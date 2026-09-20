@@ -307,6 +307,8 @@ def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
             episode, feature_name, samples[0].value, feature_name
         )
     for feature_name, values in sorted(episode.observations.items()):
+        if feature_name in episode.hidden_observations:
+            continue
         features[feature_name] = _vector_feature(
             episode, feature_name, values[0].value, feature_name.rsplit(".", 1)[-1]
         )
@@ -668,6 +670,8 @@ class McapToLeRobotConverter:
                         dtype=expected_features["action"]["dtype"],
                     )
                 for feature_name, values in episode.observations.items():
+                    if feature_name in episode.hidden_observations:
+                        continue
                     sample = values[int(plan.observation_index[feature_name][position])]
                     frame[feature_name] = np.asarray(
                         sample.value, dtype=expected_features[feature_name]["dtype"]

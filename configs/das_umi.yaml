@@ -27,6 +27,8 @@ streams:
   - {key: ego_imu, topic: /robot0/sensor/imu, kind: imu, feature: observation.imu, rate_hz: 200, required: true}
   - {key: left_imu, topic: /robot1/sensor/imu, kind: imu, feature: observation.imu.left_wrist, rate_hz: 200, required: true}
   - {key: right_imu, topic: /robot2/sensor/imu, kind: imu, feature: observation.imu.right_wrist, rate_hz: 200, required: true}
+  # Encoder features below are internal sampling keys, not exported raw-value columns.
+  # State/action use unchanged float32 values as gripper.pos (assumed radians; unit unconfirmed).
   - {key: left_magnetic, topic: /robot1/sensor/magnetic_encoder, kind: magnetic, feature: observation.magnetic.left.raw_value, rate_hz: 50, required: true, state_block: left_magnetic}
   - {key: right_magnetic, topic: /robot2/sensor/magnetic_encoder, kind: magnetic, feature: observation.magnetic.right.raw_value, rate_hz: 50, required: true, state_block: right_magnetic}
 

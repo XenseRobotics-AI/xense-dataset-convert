@@ -88,6 +88,8 @@ class EpisodeData:
     """Explicit output timeline. ROS2 inputs use the state timestamps instead."""
     observations: dict[str, list[TimedArray]] = field(default_factory=dict)
     """Additional profile observations, such as DAS IMU samples."""
+    hidden_observations: set[str] = field(default_factory=set)
+    """Sampling streams retained for alignment/audit but not exported as vectors."""
     source_labels: dict[str, str] = field(default_factory=dict)
     """Exported source feature -> label for timestamp/index audit columns."""
     max_gaps_ns: dict[str, int] = field(default_factory=dict)

@@ -92,6 +92,12 @@ The eight video features are the existing
 as `observation.imu`, `.left_wrist`, and `.right_wrist`. World and relative
 head poses remain separate XYZ + 6D rotation features. Rotation uses matrix
 columns `[R00,R10,R20,R01,R11,R21]`, without a coordinate-frame transform.
+Auxiliary vector dimension names include their feature-relative source namespace
+(for example `imu.angular_velocity.x`,
+`imu.left_wrist.angular_velocity.x`, and `pose.head_world.x`). Thus only the
+intentional `observation.state` / `action` current/next-frame pair shares
+dimension names; independent IMUs and poses cannot be mistaken for paired
+series by LeRobot consumers.
 
 By default, `observation.state` and `action` are float32 vectors with these
 same 11 names, in order:

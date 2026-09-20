@@ -312,14 +312,22 @@ def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
         features[feature_name] = _vector_feature(
             episode, feature_name, values[0].value, feature_name.rsplit(".", 1)[-1]
         )
-    for imu_feature in [key for key in features if key.startswith("observation.imu")]:
-        features[imu_feature]["names"] = [
-            "angular_velocity.x",
-            "angular_velocity.y",
-            "angular_velocity.z",
-            "linear_acceleration.x",
-            "linear_acceleration.y",
-            "linear_acceleration.z",
+    # DAS-UMI embeds source-qualified names for each auxiliary sensor. Preserve
+    # those declarations: replacing them with the same six bare IMU names makes
+    # independent Ego/left/right streams collide in LeRobot consumers. DAS-Ego
+    # has no embedded declaration, so give its sole IMU the same unambiguous
+    # feature-relative convention here.
+    if episode.profile == "das-ego" and "observation.imu" in features:
+        features["observation.imu"]["names"] = [
+            f"imu.{component}"
+            for component in (
+                "angular_velocity.x",
+                "angular_velocity.y",
+                "angular_velocity.z",
+                "linear_acceleration.x",
+                "linear_acceleration.y",
+                "linear_acceleration.z",
+            )
         ]
     if episode.profile in ("das-ego", "das-umi"):
         features[SOURCE_TIMESTAMP_FEATURE] = {

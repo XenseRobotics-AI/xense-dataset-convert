@@ -239,6 +239,41 @@ def test_das_umi_preflight_grid_state_action_and_streaming(tmp_path):
     assert features["observation.state"]["names"][0] == "left_gripper.pos"
     assert features["observation.state"]["names"][-1] == "head_camera.r6"
     assert features["action"]["names"] == features["observation.state"]["names"]
+    assert features["observation.imu"]["names"] == [
+        f"imu.{name}"
+        for name in (
+            "angular_velocity.x",
+            "angular_velocity.y",
+            "angular_velocity.z",
+            "linear_acceleration.x",
+            "linear_acceleration.y",
+            "linear_acceleration.z",
+        )
+    ]
+    assert features["observation.imu.left_wrist"]["names"][0] == (
+        "imu.left_wrist.angular_velocity.x"
+    )
+    assert features["observation.imu.right_wrist"]["names"][0] == (
+        "imu.right_wrist.angular_velocity.x"
+    )
+    assert features["observation.pose.head_relative"]["names"][0] == (
+        "pose.head_relative.x"
+    )
+    assert features["observation.pose.head_world"]["names"][0] == "pose.head_world.x"
+
+    # Only the intentional current/next-frame training pair may share dimension
+    # names. Auxiliary sensors must never be interpreted as paired curves.
+    auxiliary = {
+        key: set(spec["names"] or [])
+        for key, spec in features.items()
+        if key.startswith("observation.")
+        and key != "observation.state"
+        and spec["dtype"] not in {"video", "image"}
+    }
+    for key, names in auxiliary.items():
+        for other_key, other_names in auxiliary.items():
+            if key < other_key:
+                assert names.isdisjoint(other_names), (key, other_key)
     assert "observation.source_timestamp.left_wrist" in features
     assert "observation.source_index.right_wrist" in features
 

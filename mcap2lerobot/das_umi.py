@@ -50,6 +50,18 @@ GRIPPER_UNITS = (
 )
 
 
+def _observation_names(feature: str, components: list[str]) -> list[str]:
+    """Qualify auxiliary dimensions so only state/action names intentionally pair.
+
+    LeRobot consumers group numeric series by their dimension names. Reusing bare
+    names such as ``angular_velocity.x`` for all three IMUs (or ``x`` for both
+    poses) therefore makes unrelated sensors look like paired state/action data.
+    The feature-relative namespace keeps every auxiliary dimension unambiguous.
+    """
+    namespace = feature.removeprefix("observation.")
+    return [f"{namespace}.{component}" for component in components]
+
+
 @dataclass(frozen=True)
 class StreamRule:
     key: str
@@ -579,13 +591,14 @@ def _build_episode(
             if rule.kind == "magnetic":
                 episode.hidden_observations.add(rule.feature)
                 continue
-            names = (
+            components = (
                 POSE_NAMES
                 if rule.kind == "pose"
                 else IMU_NAMES
                 if rule.kind == "imu"
                 else ["raw_value"]
             )
+            names = _observation_names(rule.feature, components)
             feature_specs[rule.feature] = {
                 "dtype": "float32",
                 "shape": [len(names)],
@@ -1175,7 +1188,7 @@ def verify_tabular_output(
     repo_id: str,
     episodes: list[EpisodeData] | None = None,
 ) -> None:
-    """Load the published layout and check parquet rows, grid, and shifted action."""
+    """Check rows, grid, every auxiliary vector, and shifted action."""
     import pyarrow.parquet as pq
 
     paths = sorted((root / "data").glob("**/*.parquet"))
@@ -1221,6 +1234,24 @@ def verify_tabular_output(
                     raise ValueError(
                         f"{key} differs from aligned source, including final row"
                     )
+            timeline_ns = np.asarray(expected_episode.timeline_ns, dtype=np.int64)
+            for key, samples in expected_episode.observations.items():
+                if key in expected_episode.hidden_observations:
+                    continue
+                if key not in columns:
+                    raise ValueError(f"missing {key} column")
+                source_ns = np.asarray(
+                    [sample.timestamp_ns for sample in samples], dtype=np.int64
+                )
+                selected = _nearest_indices(source_ns, timeline_ns)
+                expected_values = np.stack(
+                    [samples[int(index)].value for index in selected]
+                )
+                actual = np.asarray(
+                    table[key].to_pylist(), dtype=expected_values.dtype
+                )[mask]
+                if not np.array_equal(actual, expected_values):
+                    raise ValueError(f"{key} differs from aligned source")
         if "observation.source_timestamp" in columns:
             source = np.asarray(
                 table["observation.source_timestamp"].to_pylist(), dtype=np.int64

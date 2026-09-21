@@ -20,7 +20,7 @@ from .converter import McapToLeRobotConverter
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mcap2lerobot",
-        description="Convert MCAP episode files into a LeRobot v3 dataset",
+        description="Convert XTac, ROS2, DAS-Ego, or DAS-UMI MCAP files into a LeRobot v3 dataset",
     )
     parser.add_argument("inputs", nargs="+", help="MCAP files or directories")
     parser.add_argument("-o", "--output", required=True, help="New dataset directory")
@@ -58,16 +58,57 @@ def build_parser() -> argparse.ArgumentParser:
             f"'xtac_umi_g1' ({DIALECT_XTAC!r})"
         ),
     )
-    roundtrip = parser.add_argument_group(f"{DIALECT_LEROBOT_ROUNDTRIP!r} dialect topic layout")
+    roundtrip = parser.add_argument_group(
+        f"{DIALECT_LEROBOT_ROUNDTRIP!r} dialect topic layout"
+    )
     roundtrip.add_argument("--state-topic", default="robot/states/data")
     roundtrip.add_argument("--action-topic", default="robot/actions/data")
     roundtrip.add_argument("--state-field", default="observation_state")
     roundtrip.add_argument("--action-field", default="action")
     parser.add_argument(
+        "--profile",
+        choices=("auto", "ros2", "das-ego", "das-umi"),
+        default="auto",
+        help="Input layout (default: auto-detect ROS2, DAS-Ego, or merged DAS-UMI Protobuf)",
+    )
+    parser.add_argument(
         "--max-sync-gap-frames",
         type=float,
         default=1.5,
         help="Maximum nearest-neighbor timestamp gap in frame periods",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Run DAS-UMI preflight and reports without writing a dataset",
+    )
+    parser.add_argument(
+        "--export-action",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="For DAS-UMI, write next-frame absolute action (default: enabled)",
+    )
+    parser.add_argument(
+        "--schema-version",
+        type=int,
+        choices=(1, 2, 3),
+        default=3,
+        help=(
+            "DAS-UMI semantic schema. v3 also normalizes gripper opening to "
+            "[0, 1]; v2 introduced the audit sidecar (default: 3)"
+        ),
+    )
+    parser.add_argument(
+        "--report-dir",
+        type=Path,
+        default=None,
+        help="DAS-UMI preflight and conversion report directory",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="DAS-UMI YAML mapping and quality thresholds",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
@@ -90,6 +131,12 @@ def main() -> int:
         max_sync_gap_frames=args.max_sync_gap_frames,
         task=args.task,
         robot_type=args.robot_type,
+        profile=args.profile,
+        config=args.config,
+        check_only=args.check_only,
+        export_action=args.export_action,
+        schema_version=args.schema_version,
+        report_dir=args.report_dir,
     )
     converter = McapToLeRobotConverter(
         inputs=[Path(value) for value in args.inputs],
@@ -102,7 +149,15 @@ def main() -> int:
     except Exception as error:
         logging.error("Conversion failed: %s", error)
         return 1
-    logging.info("LeRobot v3 dataset written to %s", result)
+    if args.check_only:
+        report_dir = (
+            (args.report_dir or output.parent / f"{output.name}_reports")
+            .expanduser()
+            .resolve()
+        )
+        logging.info("Preflight passed; reports written to %s", report_dir)
+    else:
+        logging.info("LeRobot v3 dataset written to %s", result)
     return 0
 
 

@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_TASK = "Converted from MCAP"
 DEFAULT_ROBOT_TYPE = "mcap"
+AUTO_PROFILE = "auto"
+ROS2_PROFILE = "ros2"
+DAS_EGO_PROFILE = "das-ego"
+DAS_UMI_PROFILE = "das-umi"
+DAS_UMI_SCHEMA_VERSION = 3
+DAS_UMI_SCHEMA_VERSIONS = (1, 2, 3)
+SUPPORTED_PROFILES = frozenset(
+    {AUTO_PROFILE, ROS2_PROFILE, DAS_EGO_PROFILE, DAS_UMI_PROFILE}
+)
 
 # Source layouts mcap2lerobot can read. "xtac" is the default: XTacData
 # recordings from the XTac-UMI-G1 grippers. "lerobot_roundtrip" is the ROS2 CDR
@@ -41,10 +51,18 @@ class ConverterConfig:
     max_sync_gap_frames: float = 1.5
     task: str | None = None
     robot_type: str | None = None
+    profile: str = AUTO_PROFILE
+    config: Path | None = None
+    check_only: bool = False
+    export_action: bool | None = None
+    schema_version: int = DAS_UMI_SCHEMA_VERSION
+    report_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.dialect not in DIALECTS:
-            raise ValueError(f"Unknown dialect {self.dialect!r}; expected one of {DIALECTS}")
+            raise ValueError(
+                f"Unknown dialect {self.dialect!r}; expected one of {DIALECTS}"
+            )
         object.__setattr__(self, "state_topic", normalize_topic(self.state_topic))
         object.__setattr__(self, "action_topic", normalize_topic(self.action_topic))
         object.__setattr__(
@@ -56,6 +74,20 @@ class ConverterConfig:
             raise ValueError("fps must be greater than zero")
         if self.max_sync_gap_frames <= 0:
             raise ValueError("max_sync_gap_frames must be greater than zero")
+        if self.schema_version not in DAS_UMI_SCHEMA_VERSIONS:
+            raise ValueError(
+                "schema_version must be one of "
+                f"{DAS_UMI_SCHEMA_VERSIONS}, got {self.schema_version!r}"
+            )
+        profile = self.profile.lower().strip()
+        if profile not in SUPPORTED_PROFILES:
+            choices = ", ".join(sorted(SUPPORTED_PROFILES))
+            raise ValueError(f"profile must be one of {choices}, got {self.profile!r}")
+        object.__setattr__(self, "profile", profile)
+        if self.config is not None:
+            object.__setattr__(self, "config", Path(self.config).expanduser())
+        if self.report_dir is not None:
+            object.__setattr__(self, "report_dir", Path(self.report_dir).expanduser())
 
     def video_feature_name(self, topic: str) -> str | None:
         normalized = normalize_topic(topic)

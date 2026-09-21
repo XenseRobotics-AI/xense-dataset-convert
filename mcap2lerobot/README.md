@@ -1,5 +1,7 @@
 # mcap2lerobot 流式读取设计
 
+DAS-Ego / DAS-UMI 用户上手与 schema v3 说明见 [`das_ego_UMI.md`](das_ego_UMI.md)。
+
 本文记录 `mcap2lerobot` 读取 MCAP 的方式为什么从"整集解码进内存"改成"两遍读取、按需解码"，
 以及实现必须遵守的约束。用户文档在 [`docs/mcap2lerobot.md`](../docs/mcap2lerobot.md)。
 
@@ -151,3 +153,23 @@ XTac 与往返格式的关键区别，以及对应的处理：
 参考数据集 `xtac-umi-g1-block-to-box` 属于另一批采集（`source_episode_id` 为 `EP-1788*`、序列号不同），
 只作**结构模板**；本转换器产出的设备序列号来自各自的 mcap。已核对：feature 的 dtype/shape/names、
 data parquet 列、五个 meta json 文件集合、以及三个 provenance 文件与 `rectify_config` 的键结构均与参考一致。
+## 10. DAS-UMI strict pipeline
+
+Merged Ego/Finger files keep the same two-pass contract. Pass one is stricter:
+it decodes every video packet for quality control but immediately discards the
+RGB array, retains only usable packet ordinals/timestamps, and collects the
+small numeric streams. Only after every episode passes does the existing
+`plan_pairing`/`_write_episode` path run. Per-stream half-period limits replace
+the generic ROS2 frame-gap limit for this profile.
+
+Pass two maps each selected usable-video ordinal back to its raw MCAP packet
+ordinal. Invalid allowed prefix packets are fed or skipped only for decoder
+initialization; selected frames use the same bounded per-camera cache as the
+DAS-Ego path. State and optional shifted action are ordinary `TimedArray`
+streams, so the LeRobot writer and its feature-layout checks are shared rather
+than duplicated.
+
+The DAS-UMI orchestrator differs only around that core: batch preflight and
+Markdown reports occur before writer creation; successful writes land in a
+sibling temporary directory and are published after tabular, video, load, and
+action validation.

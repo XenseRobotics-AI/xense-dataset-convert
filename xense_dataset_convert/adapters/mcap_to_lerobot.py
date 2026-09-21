@@ -23,6 +23,12 @@ CONFIG_OPTIONS = frozenset(
         "max_sync_gap_frames",
         "task",
         "robot_type",
+        "profile",
+        "config",
+        "check_only",
+        "export_action",
+        "schema_version",
+        "report_dir",
     }
 )
 ACCEPTED_OPTIONS = CONFIG_OPTIONS | {"repo_id"}

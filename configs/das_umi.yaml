@@ -4,6 +4,14 @@ fps: 30
 robot_type: das_umi
 task: DAS UMI sensor capture
 
+# DAS Fingers official nominal jaw opening is 0-220 mm. Schema v3 clips
+# source metre values to this range, maps closed/open to 0/1, and quantizes to
+# two decimal places. Override only for a separately calibrated hardware model.
+gripper_normalization:
+  min_opening_m: 0.000
+  max_opening_m: 0.220
+  decimals: 2
+
 quality:
   max_header_log_offset_ms: 1.0
   max_start_offset_ms: 100.0
@@ -28,7 +36,8 @@ streams:
   - {key: left_imu, topic: /robot1/sensor/imu, kind: imu, feature: observation.imu.left_wrist, rate_hz: 200, required: true}
   - {key: right_imu, topic: /robot2/sensor/imu, kind: imu, feature: observation.imu.right_wrist, rate_hz: 200, required: true}
   # Encoder features below are internal sampling keys, not exported raw-value columns.
-  # State/action use unchanged float32 values as gripper.pos (assumed radians; unit unconfirmed).
+  # Schema v3 maps metre-valued opening distance to gripper.pos in [0, 1].
+  # Schemas v1/v2 preserve the legacy raw float32 value for reproducibility.
   - {key: left_magnetic, topic: /robot1/sensor/magnetic_encoder, kind: magnetic, feature: observation.magnetic.left.raw_value, rate_hz: 50, required: true, state_block: left_magnetic}
   - {key: right_magnetic, topic: /robot2/sensor/magnetic_encoder, kind: magnetic, feature: observation.magnetic.right.raw_value, rate_hz: 50, required: true, state_block: right_magnetic}
 

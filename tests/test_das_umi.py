@@ -9,6 +9,7 @@ from mcap2lerobot.das_ego import detect_mcap_profile
 from mcap2lerobot.das_umi import (
     DasUmiEpisodeReader,
     load_das_umi_config,
+    normalize_gripper_opening,
     preflight_das_umi,
 )
 
@@ -189,7 +190,7 @@ def _write(
             for index in range(2 if short else 11):
                 timestamp = base + index * 20_000_000
                 payload = cls["MagneticEncoderMeasurement"](
-                    value=value_offset + index + 0.25
+                    value=value_offset + index * 0.0275 - 0.0275
                 )
                 payload.header.timestamp = timestamp
                 payload.header.sequence_num = index
@@ -211,6 +212,19 @@ def _write(
                     channel, timestamp, payload.SerializeToString(), timestamp, index
                 )
         writer.finish()
+
+
+def test_gripper_normalization_clips_scales_and_rounds_to_two_decimals():
+    rules = load_das_umi_config(None).gripper_normalization
+    values = np.array([-0.01, 0.0, 0.0011, 0.055, 0.11, 0.165, 0.22, 0.25])
+    actual = normalize_gripper_opening(values, rules)
+    np.testing.assert_array_equal(
+        actual,
+        np.array([0.0, 0.0, 0.01, 0.25, 0.5, 0.75, 1.0, 1.0], dtype=np.float32),
+    )
+    assert rules.min_opening_m == 0.0
+    assert rules.max_opening_m == 0.220
+    assert rules.decimals == 2
 
 
 def test_das_umi_preflight_grid_state_action_and_streaming(tmp_path):
@@ -297,6 +311,28 @@ def test_das_umi_schema_v1_retains_legacy_inline_audit(tmp_path):
     assert "observation.pose.head_world" in features
     assert "observation.source_timestamp.left_magnetic" in features
     assert "observation.source_index.right_magnetic" in features
+
+
+def test_das_umi_schema_v2_retains_raw_gripper_values(tmp_path):
+    path = tmp_path / "merged.mcap"
+    _write(path)
+    config = load_das_umi_config(None)
+    result = preflight_das_umi(
+        path,
+        config,
+        export_action=False,
+        video_decoder_factory=FakeVideoDecoder,
+        schema_version=2,
+    )
+    episode = result.episode
+    assert episode is not None
+    for column, label in enumerate(("left_magnetic", "right_magnetic")):
+        data = result.streams[label]
+        nearest = np.abs(data.times_ns[:, None] - episode.timeline_ns).argmin(axis=0)
+        raw = np.stack(data.values)[nearest, 0]
+        np.testing.assert_array_equal(
+            np.stack([sample.value for sample in episode.states])[:, column], raw
+        )
 
 
 def test_das_umi_missing_finger_sensor_is_a_reportable_failure(tmp_path):
@@ -401,7 +437,10 @@ def test_training_vectors_and_topic_mapping(tmp_path, enabled):
     for i, label in enumerate(("left_magnetic", "right_magnetic")):
         data = result.streams[label]
         nearest = np.abs(data.times_ns[:, None] - episode.timeline_ns).argmin(axis=0)
-        np.testing.assert_array_equal(expected[:, i], np.stack(data.values)[nearest, 0])
+        normalized = normalize_gripper_opening(
+            np.stack(data.values)[nearest, 0], config.gripper_normalization
+        )
+        np.testing.assert_array_equal(expected[:, i], normalized)
         assert f"observation.source_timestamp.{label}" not in features
         assert f"observation.source_index.{label}" not in features
     assert not any(key.startswith("observation.magnetic.") for key in features)
@@ -420,11 +459,15 @@ def test_training_vectors_and_topic_mapping(tmp_path, enabled):
         == mapping
     )
     assert "topic" not in mapping["derived_fields"][0]
-    assert mapping["schema_version"] == "2.0.0"
+    assert mapping["schema_version"] == "3.0.0"
     schema = json.loads((tmp_path / "meta/das_umi_schema.json").read_text())
-    assert schema["version"] == "2.0.0"
+    assert schema["version"] == "3.0.0"
     assert schema["action"]["source"] == "next_observation_state_proxy"
     assert schema["canonical_head_pose"]["standalone_observation_exported"] is False
+    assert schema["gripper_normalization"]["max_opening_m"] == 0.220
+    assert schema["gripper_normalization"]["decimals"] == 2
+    assert schema["gripper_normalization"]["closed_value"] == 0.0
+    assert schema["gripper_normalization"]["open_value"] == 1.0
     assert mapping["derived_fields"][0]["storage"] == ("meta/das_umi_alignment.parquet")
     topics = mapping["episodes"][0]["topics"]
     assert len(topics) == 15

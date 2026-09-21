@@ -91,11 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--schema-version",
         type=int,
-        choices=(1, 2),
-        default=2,
+        choices=(1, 2, 3),
+        default=3,
         help=(
-            "DAS-UMI semantic schema. v2 keeps acquisition timestamps in an "
-            "audit sidecar and removes duplicate control observations (default: 2)"
+            "DAS-UMI semantic schema. v3 also normalizes gripper opening to "
+            "[0, 1]; v2 introduced the audit sidecar (default: 3)"
         ),
     )
     parser.add_argument(

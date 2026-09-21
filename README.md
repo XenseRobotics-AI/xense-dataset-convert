@@ -134,7 +134,7 @@ schema rules that decide how each feature is stored.
 
 ### `mcap2lerobot` — MCAP → LeRobot v3
 
-Converts ROS2, DAS-Ego, and merged DAS-UMI MCAP episode recordings into a LeRobot v3 dataset. DAS-UMI schema v2 adds full preflight reports, strict 30 Hz alignment, next-frame control targets, observation-only IMU/auxiliary poses, and an audit sidecar outside the training table.
+Converts ROS2, DAS-Ego, and merged DAS-UMI MCAP episode recordings into a LeRobot v3 dataset. DAS-UMI schema v3 adds full preflight reports, strict 30 Hz alignment, next-frame control targets, 0–1 normalized gripper opening, observation-only IMU/auxiliary poses, and an audit sidecar outside the training table.
 
 ```bash
 mcap2lerobot ./mcap_output -o ./converted_dataset

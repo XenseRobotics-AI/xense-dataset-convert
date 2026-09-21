@@ -34,7 +34,6 @@ DAS_UMI_FPS = 30
 DAS_UMI_TASK = "DAS UMI sensor capture"
 DAS_UMI_ROBOT_TYPE = "das_umi"
 DAS_UMI_SCHEMA_NAME = "das-umi"
-DAS_UMI_SCHEMA_V2 = "2.0.0"
 ALIGNMENT_SIDECAR = "meta/das_umi_alignment.parquet"
 POSE_NAMES = ["x", "y", "z", "r1", "r2", "r3", "r4", "r5", "r6"]
 IMU_NAMES = [
@@ -47,9 +46,9 @@ IMU_NAMES = [
 ]
 
 
-GRIPPER_UNITS = (
-    "Encoder values pass through unchanged except float32 conversion; assumed radians, "
-    "units unconfirmed (单位待确认), unlike TacCap normalized gripper opening."
+LEGACY_GRIPPER_UNITS = (
+    "Encoder values pass through unchanged except float32 conversion; units were "
+    "unconfirmed in DAS-UMI schemas v1/v2."
 )
 
 
@@ -89,11 +88,27 @@ class QualityRules:
 
 
 @dataclass(frozen=True)
+class GripperNormalization:
+    min_opening_m: float = 0.0
+    max_opening_m: float = 0.220
+    decimals: int = 2
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.min_opening_m) or not np.isfinite(self.max_opening_m):
+            raise ValueError("gripper normalization bounds must be finite")
+        if self.max_opening_m <= self.min_opening_m:
+            raise ValueError("gripper max_opening_m must exceed min_opening_m")
+        if self.decimals < 0:
+            raise ValueError("gripper normalization decimals must be non-negative")
+
+
+@dataclass(frozen=True)
 class DasUmiConfig:
     fps: int
     robot_type: str
     task: str
     quality: QualityRules
+    gripper_normalization: GripperNormalization
     streams: tuple[StreamRule, ...]
     calibration_topics: tuple[str, ...]
     source_path: Path
@@ -180,6 +195,9 @@ def load_das_umi_config(path: Path | None) -> DasUmiConfig:
     if fps != DAS_UMI_FPS:
         raise ValueError(f"DAS-UMI output is fixed at 30 Hz; config requested {fps} Hz")
     quality = QualityRules(**(raw.get("quality") or {}))
+    gripper_normalization = GripperNormalization(
+        **(raw.get("gripper_normalization") or {})
+    )
     rules = []
     for entry in raw.get("streams") or []:
         item = dict(entry)
@@ -193,6 +211,7 @@ def load_das_umi_config(path: Path | None) -> DasUmiConfig:
         robot_type=str(raw.get("robot_type", DAS_UMI_ROBOT_TYPE)),
         task=str(raw.get("task", DAS_UMI_TASK)),
         quality=quality,
+        gripper_normalization=gripper_normalization,
         streams=tuple(rules),
         calibration_topics=tuple(
             normalize_topic(x) for x in raw.get("calibration_topics") or []
@@ -322,7 +341,7 @@ def preflight_das_umi(
     config: DasUmiConfig,
     export_action: bool | None = None,
     video_decoder_factory: Callable[[str], Any] = VideoStreamDecoder,
-    schema_version: int = 2,
+    schema_version: int = 3,
 ) -> PreflightResult:
     started = time.monotonic()
     source = Path(path)
@@ -559,6 +578,38 @@ def preflight_das_umi(
     )
 
 
+def normalize_gripper_opening(
+    values: np.ndarray, normalization: GripperNormalization
+) -> np.ndarray:
+    """Clip metre-valued jaw opening and map closed/open to 0/1."""
+    array = np.asarray(values, dtype=np.float64)
+    clipped = np.clip(array, normalization.min_opening_m, normalization.max_opening_m)
+    normalized = (clipped - normalization.min_opening_m) / (
+        normalization.max_opening_m - normalization.min_opening_m
+    )
+    scale = 10**normalization.decimals
+    # Inputs are non-negative after clipping; floor(x + 0.5) gives conventional
+    # decimal half-up rounding instead of banker's rounding at exact ties.
+    rounded = np.floor(normalized * scale + 0.5) / scale
+    return rounded.astype(np.float32)
+
+
+def _schema_version_name(schema_version: int) -> str:
+    return f"{schema_version}.0.0"
+
+
+def _gripper_description(episode: EpisodeData) -> str:
+    info = episode.info or {}
+    normalization = info.get("gripper_normalization")
+    if normalization:
+        return (
+            f"distance_m clipped to [{normalization['min_opening_m']:.3f}, "
+            f"{normalization['max_opening_m']:.3f}], normalized with 0=closed and "
+            f"1=open, rounded to {normalization['decimals']} decimals"
+        )
+    return LEGACY_GRIPPER_UNITS
+
+
 def _build_episode(
     source: Path,
     config: DasUmiConfig,
@@ -632,6 +683,7 @@ def _build_episode(
     state_names: list[str] = []
     state_parts: list[np.ndarray] = []
     state_components: dict[str, list[dict[str, Any]]] = {}
+    gripper_clipping: dict[str, dict[str, int | float]] = {}
     prefixes = {
         "left_pose": "left_hand",
         "left_magnetic": "left_gripper",
@@ -645,6 +697,16 @@ def _build_episode(
             continue
         index = _nearest_indices(data.times_ns, ticks)
         values = np.stack(data.values)[index]
+        if schema_version >= 3 and data.rule.kind == "magnetic":
+            raw_values = values.astype(np.float64, copy=False)
+            rules = config.gripper_normalization
+            gripper_clipping[data.rule.key] = {
+                "raw_min_m": float(raw_values.min()),
+                "raw_max_m": float(raw_values.max()),
+                "below_min": int(np.count_nonzero(raw_values < rules.min_opening_m)),
+                "above_max": int(np.count_nonzero(raw_values > rules.max_opening_m)),
+            }
+            values = normalize_gripper_opening(values, rules)
         state_parts.append(values)
         component_names = POSE_NAMES if data.rule.kind == "pose" else ["pos"]
         state_components[data.rule.key] = [
@@ -684,6 +746,20 @@ def _build_episode(
         "export_action": export_action,
         "action_tail_rows_dropped": int(export_action and bool(state_parts)),
         "das_umi_schema_version": schema_version,
+        "gripper_normalization": (
+            {
+                "input_unit": "m",
+                "min_opening_m": config.gripper_normalization.min_opening_m,
+                "max_opening_m": config.gripper_normalization.max_opening_m,
+                "decimals": config.gripper_normalization.decimals,
+                "closed_value": 0.0,
+                "open_value": 1.0,
+                "out_of_range": "clip",
+                "clipped_aligned_samples": gripper_clipping,
+            }
+            if schema_version >= 3
+            else None
+        ),
     }
     return episode
 
@@ -1058,11 +1134,17 @@ def write_conversion_report(
         ),
         default=1,
     )
+    first_episode = next(
+        (result.episode for result in results if result.episode is not None), None
+    )
+    gripper_description = (
+        _gripper_description(first_episode) if first_episode else LEGACY_GRIPPER_UNITS
+    )
     lines += [
         f"DAS-UMI schema: {schema_version}",
         f"Action: {'enabled (next-frame absolute state proxy)' if action_enabled else 'disabled'}",
         f"Action tail rows dropped: {dropped} (one per enabled episode)",
-        f"Gripper units: {GRIPPER_UNITS}",
+        f"Gripper: {gripper_description}",
         "Head: world pose; rotation [R00,R10,R20,R01,R11,R21]; no TacCap camera-frame calibration implied.",
         "Topic mapping: `meta/das_umi_topic_mapping.json` (created with dataset)",
         (
@@ -1088,6 +1170,11 @@ def write_conversion_report(
                 "- Alignment sidecar and absence of inline audit features: PASS"
                 if schema_version >= 2
                 else "- Legacy inline alignment audit features: PASS"
+            ),
+            *(
+                ["- Gripper range [0, 1] and two-decimal quantization: PASS"]
+                if schema_version >= 3
+                else []
             ),
             "- Video decode count and resolution: PASS",
             "- Shifted action equality (all rows, including final target): PASS"
@@ -1210,7 +1297,7 @@ def write_schema_metadata(root: Path, episodes: list[EpisodeData]) -> None:
     ]
     payload = {
         "schema": DAS_UMI_SCHEMA_NAME,
-        "version": DAS_UMI_SCHEMA_V2 if schema_version >= 2 else "1.0.0",
+        "version": _schema_version_name(schema_version),
         "lerobot_codebase_version": "v3.0",
         "observation_state": {
             "semantic_role": "control_state",
@@ -1236,6 +1323,7 @@ def write_schema_metadata(root: Path, episodes: list[EpisodeData]) -> None:
             "coordinate_frame": "source world frame; no TacCap frame transform",
             "standalone_observation_exported": schema_version < 2,
         },
+        "gripper_normalization": (first.info or {}).get("gripper_normalization"),
         "alignment_audit": {
             "storage": ALIGNMENT_SIDECAR if schema_version >= 2 else "inline features",
             "timestamp_dtype": "int64 nanoseconds",
@@ -1320,12 +1408,21 @@ def topic_mapping(results: list[PreflightResult]) -> dict[str, Any]:
     if sidecar_audit:
         derived["storage"] = ALIGNMENT_SIDECAR
     return {
-        "schema_version": DAS_UMI_SCHEMA_V2 if sidecar_audit else "1.0.0",
+        "schema_version": _schema_version_name(schema_version),
         "description": (
             "Source topics to control/sensor fields; action is next-frame absolute "
             "state. Acquisition clocks are audit metadata, never actions."
         ),
-        "gripper_units": GRIPPER_UNITS,
+        "gripper": {
+            "description": _gripper_description(
+                next(result.episode for result in results if result.episode is not None)
+            ),
+            "normalization": next(
+                (result.episode.info or {}).get("gripper_normalization")
+                for result in results
+                if result.episode is not None
+            ),
+        },
         "head_pose": (
             "World pose, rotation [R00,R10,R20,R01,R11,R21]; no TacCap "
             "camera-frame calibration implied."
@@ -1521,6 +1618,22 @@ def verify_tabular_output(
             action = np.asarray(table["action"].to_pylist(), dtype=np.float32)[mask]
             if len(state) > 1 and not np.array_equal(action[:-1], state[1:]):
                 raise ValueError("action[t] does not equal observation.state[t+1]")
+            if schema_version >= 3:
+                names = (expected_episode.info or {})["features"]["observation.state"][
+                    "names"
+                ]
+                gripper_indices = [
+                    index for index, name in enumerate(names) if "gripper.pos" in name
+                ]
+                for key, values in (("observation.state", state), ("action", action)):
+                    gripper = values[:, gripper_indices]
+                    if np.any(gripper < 0.0) or np.any(gripper > 1.0):
+                        raise ValueError(f"{key} gripper values are outside [0, 1]")
+                    quantized = np.floor(gripper * 100.0 + 0.5) / 100.0
+                    if not np.allclose(gripper, quantized, rtol=0.0, atol=1e-6):
+                        raise ValueError(
+                            f"{key} gripper values are not two-decimal quantized"
+                        )
     mapping_path = root / "meta" / "das_umi_topic_mapping.json"
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     info = json.loads((root / "meta" / "info.json").read_text(encoding="utf-8"))

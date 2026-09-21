@@ -108,18 +108,24 @@ same 11 names, in order:
 
 | Indices | Names | Source |
 |---|---|---|
-| 0 | `left_gripper.pos` | Left encoder |
-| 1 | `right_gripper.pos` | Right encoder |
+| 0 | `left_gripper.pos` | Normalized left opening, 0 closed / 1 open |
+| 1 | `right_gripper.pos` | Normalized right opening, 0 closed / 1 open |
 | 2–4 | `head_camera.x`, `.y`, `.z` | Head world position |
 | 5–10 | `head_camera.r1` … `.r6` | Head world rotation |
 
-Encoder values pass through unchanged except for float32 conversion. They are
-provisionally interpreted as radians: **units unconfirmed / 单位待确认**, unlike
-TacCap normalized gripper opening. No normalization or jaw-distance conversion
-is applied. Duplicate `observation.magnetic.left/right.raw_value` columns are
-no longer exported; encoder samples remain available internally for alignment
-and audit metadata. Matching field names
-does not imply calibration to the TacCap camera coordinate frame.
+DAS-UMI schema v3 interprets the Finger magnetic-encoder value as jaw opening
+in metres. It clips the official nominal travel to `[0.000, 0.220] m`, maps it
+to `[0, 1]` with `0 = fully closed` and `1 = fully open`, and rounds the result
+to two decimal places. Clipping happens before normalization, so negative values
+become `0.00` and values above 220 mm become `1.00`. The same normalized matrix
+is used for current `observation.state` and shifted `action`; raw values never
+leak into the action vector. Schemas v1/v2 retain their legacy raw float32
+behavior only for reproducibility.
+
+Duplicate `observation.magnetic.left/right.raw_value` columns are not exported;
+raw encoder samples remain available internally for alignment, and v3 records
+per-side raw min/max and clipping counts in `meta/das_umi_schema.json`. Matching
+field names does not imply calibration to the TacCap camera coordinate frame.
 
 For each episode, first align the complete sequence `S[0…N-1]`, then export:
 
@@ -141,7 +147,7 @@ blocks are not filled with zeros. Existing optional hand-pose configuration
 remains supported (29 values with both hand poses). The eight images, three
 IMUs, and independent head poses do not extend the default training vector.
 
-Schema v2 keeps acquisition clocks out of the training Parquet and LeRobot
+Schemas v2 and v3 keep acquisition clocks out of the training Parquet and LeRobot
 visualizer. `meta/das_umi_alignment.parquet` contains one row per exported
 frame with `episode_index`, `frame_index`, the exact int64
 `target_grid_timestamp_ns`, and for every sampled stream its
@@ -152,14 +158,15 @@ explicitly use the next aligned frame. `meta/das_umi_schema.json` documents the
 control, sensor, derived, and audit roles. Calibration remains in
 `meta/das_umi_calibration.json`; preflight reports list unconverted topics.
 
-Use `--schema-version 1` only when reproducing the legacy inline
-`observation.source_timestamp*` / `observation.source_index*` columns and the
-duplicate standalone world-pose observation. LeRobot `codebase_version` remains
-`v3.0` for both schemas because it describes the storage format, not the
-DAS-UMI semantic contract.
+Schema v3 is the default. Use `--schema-version 2` to reproduce raw gripper
+values with the audit sidecar, or `--schema-version 1` to additionally reproduce
+inline `observation.source_timestamp*` / `observation.source_index*` columns and
+the duplicate standalone world-pose observation. LeRobot `codebase_version`
+remains `v3.0` for every semantic schema because it describes the storage
+format, not the DAS-UMI semantic contract.
 
 Conversion reports include the vector layout, action setting, tail row count,
-gripper unit assumption, mapping path, and validation results (action validation
+gripper normalization and clipping counts, mapping path, and validation results (action validation
 is N/A when disabled).
 
 ## DAS-UMI preflight and reports
@@ -229,8 +236,8 @@ Export the default training observations and next-frame absolute action:
 
 ```bash
 mcap2lerobot output/59214a9e/merged_output_ego_vio.mcap \
-  -o ./59214a9e_lerobot_v2 --profile das-umi --schema-version 2 \
-  --report-dir ./59214a9e_lerobot_v2_reports
+  -o ./59214a9e_lerobot_v3 --profile das-umi --schema-version 3 \
+  --report-dir ./59214a9e_lerobot_v3_reports
 ```
 
 Convert `lerobot2mcap` round-trip output and optionally override its topics:

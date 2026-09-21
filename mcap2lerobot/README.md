@@ -1,5 +1,7 @@
 # mcap2lerobot 流式读取设计
 
+DAS-Ego / DAS-UMI 用户上手与 schema v3 说明见 [`das_ego_UMI.md`](das_ego_UMI.md)。
+
 本文记录 `mcap2lerobot` 读取 MCAP 的方式为什么从"整集解码进内存"改成"两遍读取、按需解码"，
 以及实现必须遵守的约束。用户文档在 [`docs/mcap2lerobot.md`](../docs/mcap2lerobot.md)。
 

@@ -140,8 +140,8 @@ Converts ROS2, DAS-Ego, and merged DAS-UMI MCAP episode recordings into a LeRobo
 mcap2lerobot ./mcap_output -o ./converted_dataset
 ```
 
-See [docs/mcap2lerobot.md](docs/mcap2lerobot.md) for the expected topic layout
-and current limitations.
+See [docs/mcap2lerobot.md](docs/mcap2lerobot.md) for the generic topic layout, and
+[mcap2lerobot/das_ego_UMI.md](mcap2lerobot/das_ego_UMI.md) for the DAS workflow and schema v3.
 
 ### `hdf52lerobot` — UMI HDF5/MKV → LeRobot v3
 

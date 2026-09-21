@@ -5,6 +5,8 @@ into a LeRobot v3.0 dataset. DAS profiles are detected before the dialect
 fallback; non-DAS inputs use `--dialect` (`xtac` by default or
 `lerobot_roundtrip`). The converter does not support arbitrary ROS layouts.
 
+DAS 用户请先阅读 [DAS-Ego / DAS-UMI 快速上手与 schema v3 说明](../mcap2lerobot/das_ego_UMI.md)。
+
 | Dialect | Source | Default |
 | --- | --- | --- |
 | `xtac` | XTacData recordings from the XTac-UMI-G1 grippers | ✅ |

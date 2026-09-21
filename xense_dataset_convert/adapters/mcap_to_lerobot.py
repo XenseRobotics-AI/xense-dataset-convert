@@ -27,6 +27,7 @@ CONFIG_OPTIONS = frozenset(
         "config",
         "check_only",
         "export_action",
+        "schema_version",
         "report_dir",
     }
 )

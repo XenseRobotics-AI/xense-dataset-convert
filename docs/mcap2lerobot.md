@@ -89,15 +89,19 @@ T[k] = start + floor(k * 1,000,000,000 / 30)
 The eight video features are the existing
 `observation.images.camera0` … `camera5` plus
 `observation.images.left_wrist` and `right_wrist`. The three IMUs are exported
-as `observation.imu`, `.left_wrist`, and `.right_wrist`. World and relative
-head poses remain separate XYZ + 6D rotation features. Rotation uses matrix
-columns `[R00,R10,R20,R01,R11,R21]`, without a coordinate-frame transform.
+as observation-only `observation.imu`, `.left_wrist`, and `.right_wrist`
+features. `observation.pose.head_relative` is also observation-only. The world
+head pose is the source of the canonical head components in
+`observation.state` and `action`; schema v2 does not export it a second time as
+`observation.pose.head_world`. Rotation uses matrix columns
+`[R00,R10,R20,R01,R11,R21]`, without a coordinate-frame transform.
+
 Auxiliary vector dimension names include their feature-relative source namespace
 (for example `imu.angular_velocity.x`,
-`imu.left_wrist.angular_velocity.x`, and `pose.head_world.x`). Thus only the
-intentional `observation.state` / `action` current/next-frame pair shares
-dimension names; independent IMUs and poses cannot be mistaken for paired
-series by LeRobot consumers.
+`imu.left_wrist.angular_velocity.x`, and `pose.head_relative.x`). Sensor
+observations never acquire a synthetic action merely to create matching curves
+in the visualizer. Only the intentional `observation.state` / `action` control
+pair shares dimension names.
 
 By default, `observation.state` and `action` are float32 vectors with these
 same 11 names, in order:
@@ -114,7 +118,7 @@ provisionally interpreted as radians: **units unconfirmed / 单位待确认**, u
 TacCap normalized gripper opening. No normalization or jaw-distance conversion
 is applied. Duplicate `observation.magnetic.left/right.raw_value` columns are
 no longer exported; encoder samples remain available internally for alignment
-and their source timestamp/index columns are retained. Matching field names
+and audit metadata. Matching field names
 does not imply calibration to the TacCap camera coordinate frame.
 
 For each episode, first align the complete sequence `S[0…N-1]`, then export:
@@ -137,17 +141,22 @@ blocks are not filled with zeros. Existing optional hand-pose configuration
 remains supported (29 values with both hand poses). The eight images, three
 IMUs, and independent head poses do not extend the default training vector.
 
-`observation.source_timestamp` contains the derived target grid time. Every
-sampled stream also has `observation.source_timestamp.<stream>` and
-`observation.source_index.<stream>`, recording its current observation row's
-selected acquisition time and original MCAP message ordinal.
-`meta/das_umi_topic_mapping.json` lists each actual source topic's exported
-fields, audit columns, and state/action component names and indices; action
-components explicitly use the next aligned frame. Disabling action removes
-its mapping entries. The mapping identifies grid time as derived, with no
-source topic. Calibration remains in `meta/das_umi_calibration.json`; preflight
-reports list unconverted topics. LeRobot v3 data/video path templates, device
-type, camera views, and image resolutions are unchanged.
+Schema v2 keeps acquisition clocks out of the training Parquet and LeRobot
+visualizer. `meta/das_umi_alignment.parquet` contains one row per exported
+frame with `episode_index`, `frame_index`, the exact int64
+`target_grid_timestamp_ns`, and for every sampled stream its
+`source_timestamp_ns`, original `source_index`, and signed `sync_error_ns`.
+`meta/das_umi_topic_mapping.json` links those audit columns to their actual
+source topics and records the state/action components; action components
+explicitly use the next aligned frame. `meta/das_umi_schema.json` documents the
+control, sensor, derived, and audit roles. Calibration remains in
+`meta/das_umi_calibration.json`; preflight reports list unconverted topics.
+
+Use `--schema-version 1` only when reproducing the legacy inline
+`observation.source_timestamp*` / `observation.source_index*` columns and the
+duplicate standalone world-pose observation. LeRobot `codebase_version` remains
+`v3.0` for both schemas because it describes the storage format, not the
+DAS-UMI semantic contract.
 
 Conversion reports include the vector layout, action setting, tail row count,
 gripper unit assumption, mapping path, and validation results (action validation
@@ -220,8 +229,8 @@ Export the default training observations and next-frame absolute action:
 
 ```bash
 mcap2lerobot output/59214a9e/merged_output_ego_vio.mcap \
-  -o ./59214a9e_lerobot_action --profile das-umi \
-  --report-dir ./59214a9e_reports
+  -o ./59214a9e_lerobot_v2 --profile das-umi --schema-version 2 \
+  --report-dir ./59214a9e_lerobot_v2_reports
 ```
 
 Convert `lerobot2mcap` round-trip output and optionally override its topics:

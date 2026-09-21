@@ -11,6 +11,8 @@ AUTO_PROFILE = "auto"
 ROS2_PROFILE = "ros2"
 DAS_EGO_PROFILE = "das-ego"
 DAS_UMI_PROFILE = "das-umi"
+DAS_UMI_SCHEMA_VERSION = 2
+DAS_UMI_SCHEMA_VERSIONS = (1, 2)
 SUPPORTED_PROFILES = frozenset(
     {AUTO_PROFILE, ROS2_PROFILE, DAS_EGO_PROFILE, DAS_UMI_PROFILE}
 )
@@ -53,11 +55,14 @@ class ConverterConfig:
     config: Path | None = None
     check_only: bool = False
     export_action: bool | None = None
+    schema_version: int = DAS_UMI_SCHEMA_VERSION
     report_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.dialect not in DIALECTS:
-            raise ValueError(f"Unknown dialect {self.dialect!r}; expected one of {DIALECTS}")
+            raise ValueError(
+                f"Unknown dialect {self.dialect!r}; expected one of {DIALECTS}"
+            )
         object.__setattr__(self, "state_topic", normalize_topic(self.state_topic))
         object.__setattr__(self, "action_topic", normalize_topic(self.action_topic))
         object.__setattr__(
@@ -69,6 +74,11 @@ class ConverterConfig:
             raise ValueError("fps must be greater than zero")
         if self.max_sync_gap_frames <= 0:
             raise ValueError("max_sync_gap_frames must be greater than zero")
+        if self.schema_version not in DAS_UMI_SCHEMA_VERSIONS:
+            raise ValueError(
+                "schema_version must be one of "
+                f"{DAS_UMI_SCHEMA_VERSIONS}, got {self.schema_version!r}"
+            )
         profile = self.profile.lower().strip()
         if profile not in SUPPORTED_PROFILES:
             choices = ", ".join(sorted(SUPPORTED_PROFILES))

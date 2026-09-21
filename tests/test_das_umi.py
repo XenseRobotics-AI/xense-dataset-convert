@@ -259,7 +259,7 @@ def test_das_umi_preflight_grid_state_action_and_streaming(tmp_path):
     assert features["observation.pose.head_relative"]["names"][0] == (
         "pose.head_relative.x"
     )
-    assert features["observation.pose.head_world"]["names"][0] == "pose.head_world.x"
+    assert "observation.pose.head_world" not in features
 
     # Only the intentional current/next-frame training pair may share dimension
     # names. Auxiliary sensors must never be interpreted as paired curves.
@@ -274,14 +274,29 @@ def test_das_umi_preflight_grid_state_action_and_streaming(tmp_path):
         for other_key, other_names in auxiliary.items():
             if key < other_key:
                 assert names.isdisjoint(other_names), (key, other_key)
-    assert "observation.source_timestamp.left_wrist" in features
-    assert "observation.source_index.right_wrist" in features
+    assert not any(key.startswith("observation.source_") for key in features)
 
     plan = plan_pairing(episode, 30, 1.5)
     reader = DasUmiEpisodeReader(video_decoder_factory=FakeVideoDecoder)
     frames = list(reader.iter_frames(episode, plan.video_index))
     assert len(frames) == len(episode.timeline_ns)
     assert frames[0]["observation.images.camera0"][0, 0, 0] == 2
+
+
+def test_das_umi_schema_v1_retains_legacy_inline_audit(tmp_path):
+    path = tmp_path / "merged.mcap"
+    _write(path)
+    result = preflight_das_umi(
+        path,
+        load_das_umi_config(None),
+        video_decoder_factory=FakeVideoDecoder,
+        schema_version=1,
+    )
+    assert result.passed, result.issues
+    features = build_features(result.episode)
+    assert "observation.pose.head_world" in features
+    assert "observation.source_timestamp.left_magnetic" in features
+    assert "observation.source_index.right_magnetic" in features
 
 
 def test_das_umi_missing_finger_sensor_is_a_reportable_failure(tmp_path):
@@ -338,7 +353,13 @@ def test_training_vectors_and_topic_mapping(tmp_path, enabled):
     import json
     from dataclasses import replace
 
-    from mcap2lerobot.das_umi import topic_mapping, write_topic_mapping
+    from mcap2lerobot.das_umi import (
+        topic_mapping,
+        verify_alignment_sidecar,
+        write_alignment_sidecar,
+        write_schema_metadata,
+        write_topic_mapping,
+    )
 
     path = tmp_path / "merged.mcap"
     _write(path)
@@ -381,20 +402,34 @@ def test_training_vectors_and_topic_mapping(tmp_path, enabled):
         data = result.streams[label]
         nearest = np.abs(data.times_ns[:, None] - episode.timeline_ns).argmin(axis=0)
         np.testing.assert_array_equal(expected[:, i], np.stack(data.values)[nearest, 0])
-        assert f"observation.source_timestamp.{label}" in features
-        assert f"observation.source_index.{label}" in features
+        assert f"observation.source_timestamp.{label}" not in features
+        assert f"observation.source_index.{label}" not in features
     assert not any(key.startswith("observation.magnetic.") for key in features)
-    assert len(episode.hidden_observations) == 2
+    assert episode.hidden_observations == {
+        "observation.magnetic.left.raw_value",
+        "observation.magnetic.right.raw_value",
+        "observation.pose.head_world",
+    }
     mapping = topic_mapping([result])
+    write_alignment_sidecar(tmp_path, [episode])
+    verify_alignment_sidecar(tmp_path, [episode])
+    write_schema_metadata(tmp_path, [episode])
     write_topic_mapping(tmp_path, [result])
     assert (
         json.loads((tmp_path / "meta/das_umi_topic_mapping.json").read_text())
         == mapping
     )
     assert "topic" not in mapping["derived_fields"][0]
+    assert mapping["schema_version"] == "2.0.0"
+    schema = json.loads((tmp_path / "meta/das_umi_schema.json").read_text())
+    assert schema["version"] == "2.0.0"
+    assert schema["action"]["source"] == "next_observation_state_proxy"
+    assert schema["canonical_head_pose"]["standalone_observation_exported"] is False
+    assert mapping["derived_fields"][0]["storage"] == ("meta/das_umi_alignment.parquet")
     topics = mapping["episodes"][0]["topics"]
     assert len(topics) == 15
     for topic in topics:
+        assert topic["audit_columns"]["storage"] == ("meta/das_umi_alignment.parquet")
         for target in topic["targets"]:
             spec = features[target["field"]]
             for component in target.get("components", []):
@@ -492,7 +527,8 @@ def test_batch_entrypoints_match_and_never_cross_episodes(
             else:
                 assert "action" not in frame
             assert not any(key.startswith("observation.magnetic.") for key in frame)
-            assert "observation.source_index.left_magnetic" in frame
+            assert not any(key.startswith("observation.source_") for key in frame)
+            assert "observation.pose.head_world" not in frame
             assert sum(key.startswith("observation.images.") for key in frame) == 8
     report = (tmp_path / "dataset_reports/conversion.md").read_text()
     assert f"Action tail rows dropped: {0 if enabled is False else 2}" in report

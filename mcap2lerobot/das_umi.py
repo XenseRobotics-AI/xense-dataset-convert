@@ -33,6 +33,9 @@ from .video import VideoStreamDecoder
 DAS_UMI_FPS = 30
 DAS_UMI_TASK = "DAS UMI sensor capture"
 DAS_UMI_ROBOT_TYPE = "das_umi"
+DAS_UMI_SCHEMA_NAME = "das-umi"
+DAS_UMI_SCHEMA_V2 = "2.0.0"
+ALIGNMENT_SIDECAR = "meta/das_umi_alignment.parquet"
 POSE_NAMES = ["x", "y", "z", "r1", "r2", "r3", "r4", "r5", "r6"]
 IMU_NAMES = [
     "angular_velocity.x",
@@ -319,6 +322,7 @@ def preflight_das_umi(
     config: DasUmiConfig,
     export_action: bool | None = None,
     video_decoder_factory: Callable[[str], Any] = VideoStreamDecoder,
+    schema_version: int = 2,
 ) -> PreflightResult:
     started = time.monotonic()
     source = Path(path)
@@ -526,6 +530,7 @@ def preflight_das_umi(
                 streams,
                 ticks,
                 export_action is not False,
+                schema_version,
                 issues,
                 notices,
             )
@@ -560,6 +565,7 @@ def _build_episode(
     streams: dict[str, StreamData],
     ticks: np.ndarray,
     export_action: bool,
+    schema_version: int,
     issues: list[str],
     notices: list[str],
 ) -> EpisodeData:
@@ -588,9 +594,15 @@ def _build_episode(
                 TimedArray(int(timestamp), value)
                 for timestamp, value in zip(data.times_ns, data.values)
             ]
-            if rule.kind == "magnetic":
+            if rule.kind == "magnetic" or (
+                schema_version >= 2 and rule.state_block is not None
+            ):
+                # Control-source streams remain available for state/action and
+                # alignment audit, but v2 does not duplicate them as standalone
+                # observation vectors.
                 episode.hidden_observations.add(rule.feature)
-                continue
+                if rule.kind == "magnetic":
+                    continue
             components = (
                 POSE_NAMES
                 if rule.kind == "pose"
@@ -671,6 +683,7 @@ def _build_episode(
         "state_components": state_components,
         "export_action": export_action,
         "action_tail_rows_dropped": int(export_action and bool(state_parts)),
+        "das_umi_schema_version": schema_version,
     }
     return episode
 
@@ -1037,12 +1050,26 @@ def write_conversion_report(
         for result in results
         if result.episode is not None
     )
+    schema_version = max(
+        (
+            int((result.episode.info or {}).get("das_umi_schema_version", 1))
+            for result in results
+            if result.episode is not None
+        ),
+        default=1,
+    )
     lines += [
-        f"Action: {'enabled (next-frame absolute state)' if action_enabled else 'disabled'}",
+        f"DAS-UMI schema: {schema_version}",
+        f"Action: {'enabled (next-frame absolute state proxy)' if action_enabled else 'disabled'}",
         f"Action tail rows dropped: {dropped} (one per enabled episode)",
         f"Gripper units: {GRIPPER_UNITS}",
         "Head: world pose; rotation [R00,R10,R20,R01,R11,R21]; no TacCap camera-frame calibration implied.",
         "Topic mapping: `meta/das_umi_topic_mapping.json` (created with dataset)",
+        (
+            "Alignment audit: `meta/das_umi_alignment.parquet` (not a training feature)"
+            if schema_version >= 2
+            else "Alignment audit: inline `observation.source_*` features (legacy v1)"
+        ),
     ]
     if output is not None:
         lines.append(f"Output: `{output}`")
@@ -1057,6 +1084,11 @@ def write_conversion_report(
         lines += [
             "- LeRobot load and row count: PASS",
             "- Integer 30 Hz timelines: PASS",
+            (
+                "- Alignment sidecar and absence of inline audit features: PASS"
+                if schema_version >= 2
+                else "- Legacy inline alignment audit features: PASS"
+            ),
             "- Video decode count and resolution: PASS",
             "- Shifted action equality (all rows, including final target): PASS"
             if action_enabled
@@ -1098,14 +1130,139 @@ def write_calibration_metadata(root: Path, results: list[PreflightResult]) -> No
     )
 
 
+def _audit_values(
+    episode: EpisodeData, feature: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return selected source time, original ordinal, and signed grid error."""
+    timeline = np.asarray(episode.timeline_ns, dtype=np.int64)
+    if feature in episode.videos:
+        source_ns = np.asarray(episode.videos[feature].timestamps_ns, dtype=np.int64)
+    else:
+        source_ns = np.asarray(
+            [sample.timestamp_ns for sample in episode.observations[feature]],
+            dtype=np.int64,
+        )
+    selected = _nearest_indices(source_ns, timeline)
+    original = episode.source_indices.get(feature)
+    source_index = original[selected] if original is not None else selected
+    source_time = source_ns[selected]
+    return source_time, np.asarray(source_index, dtype=np.int64), source_time - timeline
+
+
+def write_alignment_sidecar(root: Path, episodes: list[EpisodeData]) -> None:
+    """Write acquisition-clock provenance outside the training feature table."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    labels = sorted(
+        {label for episode in episodes for label in episode.source_labels.values()}
+    )
+    columns: dict[str, list[int | None]] = {
+        "episode_index": [],
+        "frame_index": [],
+        "target_grid_timestamp_ns": [],
+    }
+    for label in labels:
+        columns[f"{label}.source_timestamp_ns"] = []
+        columns[f"{label}.source_index"] = []
+        columns[f"{label}.sync_error_ns"] = []
+
+    for episode_index, episode in enumerate(episodes):
+        timeline = np.asarray(episode.timeline_ns, dtype=np.int64)
+        count = len(timeline)
+        columns["episode_index"].extend([episode_index] * count)
+        columns["frame_index"].extend(range(count))
+        columns["target_grid_timestamp_ns"].extend(timeline.tolist())
+        by_label = {label: feature for feature, label in episode.source_labels.items()}
+        for label in labels:
+            feature = by_label.get(label)
+            if feature is None:
+                for suffix in ("source_timestamp_ns", "source_index", "sync_error_ns"):
+                    columns[f"{label}.{suffix}"].extend([None] * count)
+                continue
+            source_time, source_index, sync_error = _audit_values(episode, feature)
+            columns[f"{label}.source_timestamp_ns"].extend(source_time.tolist())
+            columns[f"{label}.source_index"].extend(source_index.tolist())
+            columns[f"{label}.sync_error_ns"].extend(sync_error.tolist())
+
+    table = pa.table(
+        {name: pa.array(values, type=pa.int64()) for name, values in columns.items()}
+    )
+    destination = root / ALIGNMENT_SIDECAR
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, destination, compression="zstd")
+
+
+def write_schema_metadata(root: Path, episodes: list[EpisodeData]) -> None:
+    """Document feature roles that LeRobot's core info schema does not encode."""
+    from .converter import build_features
+
+    first = episodes[0]
+    schema_version = int((first.info or {}).get("das_umi_schema_version", 1))
+    features = build_features(first)
+    auxiliary = [
+        key
+        for key in features
+        if key.startswith("observation.")
+        and key not in {"observation.state"}
+        and not key.startswith("observation.images.")
+        and not key.startswith("observation.source_")
+    ]
+    payload = {
+        "schema": DAS_UMI_SCHEMA_NAME,
+        "version": DAS_UMI_SCHEMA_V2 if schema_version >= 2 else "1.0.0",
+        "lerobot_codebase_version": "v3.0",
+        "observation_state": {
+            "semantic_role": "control_state",
+            "components": features.get("observation.state", {}).get("names", []),
+        },
+        "action": {
+            "semantic_role": "control_target",
+            "source": "next_observation_state_proxy",
+            "shift_frames": 1,
+            "absolute_not_delta": True,
+            "components": features.get("action", {}).get("names", []),
+        },
+        "auxiliary_observations": {
+            key: {"semantic_role": "sensor_observation"} for key in auxiliary
+        },
+        "imu_units": {
+            "angular_velocity": "rad/s",
+            "linear_acceleration": "m/s^2",
+        },
+        "pose_rotation": "matrix columns [R00,R10,R20,R01,R11,R21]",
+        "canonical_head_pose": {
+            "source_feature": "observation.pose.head_world",
+            "coordinate_frame": "source world frame; no TacCap frame transform",
+            "standalone_observation_exported": schema_version < 2,
+        },
+        "alignment_audit": {
+            "storage": ALIGNMENT_SIDECAR if schema_version >= 2 else "inline features",
+            "timestamp_dtype": "int64 nanoseconds",
+            "sync_error": "source_timestamp_ns - target_grid_timestamp_ns",
+        },
+    }
+    meta = root / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "das_umi_schema.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def topic_mapping(results: list[PreflightResult]) -> dict[str, Any]:
-    """Describe actual exported fields and state components for each source topic."""
+    """Describe actual exported fields, control components, and audit storage."""
     from .converter import (
         SOURCE_TIMESTAMP_FEATURE,
         build_features,
         source_audit_features,
     )
 
+    schema_version = max(
+        int((result.episode.info or {}).get("das_umi_schema_version", 1))
+        for result in results
+        if result.episode is not None
+    )
+    sidecar_audit = schema_version >= 2
     episodes = []
     for result in results:
         episode = result.episode
@@ -1133,27 +1290,47 @@ def topic_mapping(results: list[PreflightResult]) -> dict[str, Any]:
                         }
                     )
             timestamp, index = source_audit_features(rule.key)
-            targets.extend([{"field": timestamp}, {"field": index}])
-            topics.append(
-                {
-                    "topic": f"/{rule.topic}",
-                    "stream": rule.key,
-                    "targets": targets,
-                    "source_clock": data.clock,
-                    "audit_alignment": "current observation row; action uses the next aligned frame",
-                }
-            )
-        episodes.append({"source": str(result.path), "topics": topics})
-    return {
-        "description": "Source topics to exported fields; action is next-frame absolute state.",
-        "gripper_units": GRIPPER_UNITS,
-        "head_pose": "World pose, rotation [R00,R10,R20,R01,R11,R21]; no TacCap camera-frame calibration implied.",
-        "derived_fields": [
-            {
-                "field": SOURCE_TIMESTAMP_FEATURE,
-                "description": "Derived integer 30 Hz target grid, not a source topic timestamp.",
+            topic = {
+                "topic": f"/{rule.topic}",
+                "stream": rule.key,
+                "targets": targets,
+                "source_clock": data.clock,
+                "audit_alignment": (
+                    "current observation row; action uses the next aligned frame"
+                ),
             }
-        ],
+            if sidecar_audit:
+                topic["audit_columns"] = {
+                    "source_timestamp_ns": f"{rule.key}.source_timestamp_ns",
+                    "source_index": f"{rule.key}.source_index",
+                    "sync_error_ns": f"{rule.key}.sync_error_ns",
+                    "storage": ALIGNMENT_SIDECAR,
+                }
+            else:
+                targets.extend([{"field": timestamp}, {"field": index}])
+            topics.append(topic)
+        episodes.append({"source": str(result.path), "topics": topics})
+
+    derived = {
+        "field": (
+            "target_grid_timestamp_ns" if sidecar_audit else SOURCE_TIMESTAMP_FEATURE
+        ),
+        "description": "Derived integer 30 Hz target grid, not a source timestamp.",
+    }
+    if sidecar_audit:
+        derived["storage"] = ALIGNMENT_SIDECAR
+    return {
+        "schema_version": DAS_UMI_SCHEMA_V2 if sidecar_audit else "1.0.0",
+        "description": (
+            "Source topics to control/sensor fields; action is next-frame absolute "
+            "state. Acquisition clocks are audit metadata, never actions."
+        ),
+        "gripper_units": GRIPPER_UNITS,
+        "head_pose": (
+            "World pose, rotation [R00,R10,R20,R01,R11,R21]; no TacCap "
+            "camera-frame calibration implied."
+        ),
+        "derived_fields": [derived],
         "episodes": episodes,
     }
 
@@ -1182,6 +1359,58 @@ def _failed_result(path: Path, error: Exception) -> PreflightResult:
     )
 
 
+def verify_alignment_sidecar(root: Path, episodes: list[EpisodeData]) -> None:
+    """Verify every v2 audit value against the preflight-selected source sample."""
+    import pyarrow.parquet as pq
+
+    path = root / ALIGNMENT_SIDECAR
+    if not path.is_file():
+        raise ValueError(f"missing DAS-UMI alignment sidecar: {path}")
+    table = pq.read_table(path)
+    expected_rows = sum(len(episode.timeline_ns) for episode in episodes)
+    if table.num_rows != expected_rows:
+        raise ValueError(
+            f"alignment sidecar has {table.num_rows} rows, expected {expected_rows}"
+        )
+    columns = set(table.column_names)
+    required = {"episode_index", "frame_index", "target_grid_timestamp_ns"}
+    if not required.issubset(columns):
+        raise ValueError("alignment sidecar is missing canonical index columns")
+
+    offset = 0
+    for episode_index, episode in enumerate(episodes):
+        timeline = np.asarray(episode.timeline_ns, dtype=np.int64)
+        count = len(timeline)
+        row_slice = slice(offset, offset + count)
+        actual_episode = np.asarray(table["episode_index"].to_pylist(), dtype=np.int64)[
+            row_slice
+        ]
+        actual_frame = np.asarray(table["frame_index"].to_pylist(), dtype=np.int64)[
+            row_slice
+        ]
+        actual_target = np.asarray(
+            table["target_grid_timestamp_ns"].to_pylist(), dtype=np.int64
+        )[row_slice]
+        if not np.array_equal(actual_episode, np.full(count, episode_index)):
+            raise ValueError("alignment sidecar episode_index mismatch")
+        if not np.array_equal(actual_frame, np.arange(count, dtype=np.int64)):
+            raise ValueError("alignment sidecar frame_index mismatch")
+        if not np.array_equal(actual_target, timeline):
+            raise ValueError("alignment sidecar target grid mismatch")
+        for feature, label in episode.source_labels.items():
+            expected = _audit_values(episode, feature)
+            for suffix, values in zip(
+                ("source_timestamp_ns", "source_index", "sync_error_ns"), expected
+            ):
+                key = f"{label}.{suffix}"
+                if key not in columns:
+                    raise ValueError(f"alignment sidecar missing {key}")
+                actual = np.asarray(table[key].to_pylist(), dtype=np.int64)[row_slice]
+                if not np.array_equal(actual, values):
+                    raise ValueError(f"alignment sidecar mismatch: {key}")
+        offset += count
+
+
 def verify_tabular_output(
     root: Path,
     expected_frames: int,
@@ -1202,6 +1431,24 @@ def verify_tabular_output(
 
     table = pa.concat_tables(tables)
     columns = set(table.column_names)
+    schema_version = (
+        max(
+            int((episode.info or {}).get("das_umi_schema_version", 1))
+            for episode in episodes or []
+        )
+        if episodes
+        else 1
+    )
+    if schema_version >= 2:
+        inline_audit = sorted(
+            key for key in columns if key.startswith("observation.source_")
+        )
+        if inline_audit:
+            raise ValueError(
+                f"v2 training table contains inline audit columns: {inline_audit}"
+            )
+        assert episodes is not None
+        verify_alignment_sidecar(root, episodes)
     if "episode_index" in columns:
         episode_ids = np.asarray(
             table["episode_index"].to_pylist(), dtype=np.int64
@@ -1284,6 +1531,12 @@ def verify_tabular_output(
         for topic in episode_mapping["topics"]
         for target in topic["targets"]
     ]:
+        if entry.get("storage"):
+            if not (root / entry["storage"]).is_file():
+                raise ValueError(
+                    f"topic mapping storage is missing: {entry['storage']}"
+                )
+            continue
         key = entry["field"]
         if key not in features or (
             features[key]["dtype"] != "video" and key not in columns
@@ -1354,6 +1607,7 @@ def convert_das_umi(owner: Any, mcap_files: list[Path]) -> Path:
                 path,
                 config,
                 export_action=owner.config.export_action,
+                schema_version=owner.config.schema_version,
             )
         except Exception as error:
             result = _failed_result(path, error)
@@ -1441,6 +1695,9 @@ def convert_das_umi(owner: Any, mcap_files: list[Path]) -> Path:
         )
         if owner._verify_videos:
             write_calibration_metadata(working_root, results)
+            write_schema_metadata(working_root, concrete)
+            if owner.config.schema_version >= 2:
+                write_alignment_sidecar(working_root, concrete)
             write_topic_mapping(working_root, results)
             verify_video_outputs(working_root, features, total_frames)
             verify_tabular_output(working_root, total_frames, owner.repo_id, concrete)

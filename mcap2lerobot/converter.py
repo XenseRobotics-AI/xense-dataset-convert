@@ -44,7 +44,9 @@ def discover_mcap_files(inputs: Sequence[Path]) -> list[Path]:
         if path.is_dir():
             # Skip dot-files: a directory copied off macOS carries "._EP*.mcap"
             # AppleDouble side-cars that match the glob but are not recordings.
-            files.extend(child for child in path.glob("*.mcap") if not child.name.startswith("."))
+            files.extend(
+                child for child in path.glob("*.mcap") if not child.name.startswith(".")
+            )
         elif path.is_file() and path.suffix.lower() == ".mcap":
             files.append(path)
         else:
@@ -329,7 +331,9 @@ def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
                 "linear_acceleration.z",
             )
         ]
-    if episode.profile in ("das-ego", "das-umi"):
+    das_umi_schema = int((episode.info or {}).get("das_umi_schema_version", 1))
+    inline_audit = episode.profile != "das-umi" or das_umi_schema < 2
+    if episode.profile in ("das-ego", "das-umi") and inline_audit:
         features[SOURCE_TIMESTAMP_FEATURE] = {
             "dtype": "int64",
             "shape": (1,),
@@ -340,10 +344,11 @@ def build_features(episode: EpisodeData) -> dict[str, dict[str, Any]]:
         if len(shape) != 3 or shape[2] not in (1, 3, 4):
             raise ValueError(f"{feature_name} must be an HWC image, got {shape}")
         features[feature_name] = _video_feature(episode, feature_name, shape)
-    for label in episode.source_labels.values():
-        timestamp_key, index_key = source_audit_features(label)
-        features[timestamp_key] = {"dtype": "int64", "shape": (1,), "names": None}
-        features[index_key] = {"dtype": "int64", "shape": (1,), "names": None}
+    if inline_audit:
+        for label in episode.source_labels.values():
+            timestamp_key, index_key = source_audit_features(label)
+            features[timestamp_key] = {"dtype": "int64", "shape": (1,), "names": None}
+            features[index_key] = {"dtype": "int64", "shape": (1,), "names": None}
     return features
 
 
@@ -397,7 +402,9 @@ def frame_task(
     if config.task:
         return config.task
     if episode.profile == "das-umi":
-        return config.task or str((episode.info or {}).get("task") or "DAS UMI sensor capture")
+        return config.task or str(
+            (episode.info or {}).get("task") or "DAS UMI sensor capture"
+        )
     if episode.profile == "das-ego":
         return DAS_EGO_TASK
     meta = episode.episode_meta or {}
@@ -555,7 +562,9 @@ class McapToLeRobotConverter:
                     profile = self.config.dialect
                     self.reader = self._default_reader(self.config)
                 else:
-                    profile, self.reader = reader_for_profile(self.config, mcap_files[0])
+                    profile, self.reader = reader_for_profile(
+                        self.config, mcap_files[0]
+                    )
             else:
                 profile, self.reader = reader_for_profile(self.config, mcap_files[0])
             logger.info("Using %s MCAP source", profile)
@@ -564,7 +573,9 @@ class McapToLeRobotConverter:
 
             return convert_das_umi(self, mcap_files)
         if self.config.check_only:
-            raise ValueError("--check-only is currently supported by the das-umi profile")
+            raise ValueError(
+                "--check-only is currently supported by the das-umi profile"
+            )
         if self.output_root.exists():
             raise FileExistsError(f"Output path already exists: {self.output_root}")
         first_episode = self.reader.read(mcap_files[0])
@@ -665,7 +676,9 @@ class McapToLeRobotConverter:
                 }
                 for feature_name, samples in episode.extra_vectors.items():
                     sample = samples[int(plan.extra_index[feature_name][position])]
-                    frame[feature_name] = np.array(sample.value, dtype=extra_dtypes[feature_name])
+                    frame[feature_name] = np.array(
+                        sample.value, dtype=extra_dtypes[feature_name]
+                    )
                 if state is not None:
                     frame["observation.state"] = np.asarray(
                         state.value,
@@ -687,15 +700,29 @@ class McapToLeRobotConverter:
                 for source_feature, label in episode.source_labels.items():
                     if source_feature in episode.videos:
                         selected_index = int(plan.video_index[source_feature][position])
-                        source_time = int(episode.videos[source_feature].timestamps_ns[selected_index])
+                        source_time = int(
+                            episode.videos[source_feature].timestamps_ns[selected_index]
+                        )
                     else:
-                        selected_index = int(plan.observation_index[source_feature][position])
-                        source_time = int(episode.observations[source_feature][selected_index].timestamp_ns)
+                        selected_index = int(
+                            plan.observation_index[source_feature][position]
+                        )
+                        source_time = int(
+                            episode.observations[source_feature][
+                                selected_index
+                            ].timestamp_ns
+                        )
                     original = episode.source_indices.get(source_feature)
-                    source_index = int(original[selected_index]) if original is not None else selected_index
+                    source_index = (
+                        int(original[selected_index])
+                        if original is not None
+                        else selected_index
+                    )
                     timestamp_key, index_key = source_audit_features(label)
-                    frame[timestamp_key] = np.asarray([source_time], dtype=np.int64)
-                    frame[index_key] = np.asarray([source_index], dtype=np.int64)
+                    if timestamp_key in expected_features:
+                        frame[timestamp_key] = np.asarray([source_time], dtype=np.int64)
+                    if index_key in expected_features:
+                        frame[index_key] = np.asarray([source_index], dtype=np.int64)
                 if SOURCE_TIMESTAMP_FEATURE in expected_features:
                     frame[SOURCE_TIMESTAMP_FEATURE] = np.asarray(
                         [timeline_ns[position]], dtype=np.int64

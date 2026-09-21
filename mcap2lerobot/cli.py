@@ -58,7 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
             f"'xtac_umi_g1' ({DIALECT_XTAC!r})"
         ),
     )
-    roundtrip = parser.add_argument_group(f"{DIALECT_LEROBOT_ROUNDTRIP!r} dialect topic layout")
+    roundtrip = parser.add_argument_group(
+        f"{DIALECT_LEROBOT_ROUNDTRIP!r} dialect topic layout"
+    )
     roundtrip.add_argument("--state-topic", default="robot/states/data")
     roundtrip.add_argument("--action-topic", default="robot/actions/data")
     roundtrip.add_argument("--state-field", default="observation_state")
@@ -85,6 +87,16 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="For DAS-UMI, write next-frame absolute action (default: enabled)",
+    )
+    parser.add_argument(
+        "--schema-version",
+        type=int,
+        choices=(1, 2),
+        default=2,
+        help=(
+            "DAS-UMI semantic schema. v2 keeps acquisition timestamps in an "
+            "audit sidecar and removes duplicate control observations (default: 2)"
+        ),
     )
     parser.add_argument(
         "--report-dir",
@@ -123,6 +135,7 @@ def main() -> int:
         config=args.config,
         check_only=args.check_only,
         export_action=args.export_action,
+        schema_version=args.schema_version,
         report_dir=args.report_dir,
     )
     converter = McapToLeRobotConverter(

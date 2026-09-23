@@ -42,15 +42,19 @@ capture sessions.
 
 The frame that comes out
 ------------------------
-``+Z`` along the approach, ``±X`` the jaw opening axis, origin at the two-finger
-midpoint. That is the convention the vendor URDF uses (jaws at ``+Z``,
-0.2572 m from ``base_link``) and the one RDT2's own deployment code assumes
-(``deploy/collision_utils.py`` puts the fingertips at ``±width/2`` in X,
-``±thickness/2`` in Y, ``z = 0``). Writing it means the viewer needs no rotation
-of its own: it places the model root by the URDF's own 0.2572 m and nothing else.
+``+X`` forward along the approach, ``+Y`` left, ``+Z`` up, origin at the
+two-finger midpoint — the same convention as the world frame above, and the one
+every UMI dataset in this corpus is defined in. TacCap already records it, so
+one reading serves both rigs and anything keyed off these columns can stay
+rig-agnostic.
 
-TacCap datasets keep their ``+X`` forward convention — their model, their
-measured extrinsics and their recorded data all already agree on it.
+It is **not** the vendor URDF's own frame, which approaches along its ``+Z``
+(jaws at ``z = +0.2572`` from ``base_link``), nor RDT2's deployment frame, which
+puts the fingertips at ``±width/2`` in X and ``±thickness/2`` in Y at ``z = 0``.
+Both of those are model-side conventions; a consumer that draws the vendor model
+reconciles them with a fixed axis cycle it has to carry anyway, and the viewer
+already does. Choosing the model's frame here would spare that one consumer a
+constant and cost every other consumer the corpus-wide convention.
 
 Provisional values
 ------------------
@@ -118,24 +122,30 @@ class TrackerToEe:
 
     Args:
         approach: Tracker axis pointing from the tracker at the jaws. Becomes
-            the EE frame's ``+Z``.
+            the EE frame's ``+X``, the corpus-wide forward. ``None`` means no
+            transform at all — see :meth:`rotation`.
         distance: Tracker origin -> two-finger midpoint along that axis, metres.
-        lateral: Offsets perpendicular to it, along the EE's X and Y, metres.
+        lateral: Offsets perpendicular to it, along the EE's Y and Z, metres.
         spin: Rotation about the approach axis in degrees; sets which way the
             jaws open. Only two values are distinct for a parallel jaw.
         measured: True once these came from the rig rather than from the
             placeholder in this module's docstring.
     """
 
-    approach: str = "+z"
+    approach: str | None = None
     distance: float = 0.0
     lateral: tuple[float, float] = (0.0, 0.0)
     spin: float = 0.0
     measured: bool = False
 
     def __post_init__(self) -> None:
-        if self.approach not in AXES:
+        if self.approach is not None and self.approach not in AXES:
             raise ValueError(f"approach must be one of {sorted(AXES)}, got {self.approach!r}")
+        if self.approach is None and (self.distance or any(self.lateral) or self.spin):
+            raise ValueError(
+                "approach is required to place an offset: without it there is no axis "
+                "for `distance` to run along and no axis for `spin` to turn about"
+            )
         if len(self.lateral) != 2:
             raise ValueError(f"lateral must be two numbers, got {self.lateral!r}")
 
@@ -156,36 +166,43 @@ class TrackerToEe:
     def rotation(self) -> np.ndarray:
         """EE axes expressed in tracker axes, as columns.
 
-        ``+Z`` is the approach; X and Y are free up to a rotation about it,
-        which is what ``spin`` sets. The seed is the tracker's own X projected
-        perpendicular to the approach, so that ``approach="+z", spin=0`` comes
-        out as the **identity** -- an unconfigured stream has to be a true
-        no-op, not a frame quietly rotated by whichever seed was convenient.
+        ``+X`` is the approach; Y and Z are free up to a rotation about it,
+        which is what ``spin`` sets. The seed is the tracker's own Y projected
+        perpendicular to the approach, chosen for stability rather than for
+        meaning — with the device free in the operator's hand there is no
+        absolute "left" to align to, so the jaw plane comes from ``spin``.
+
+        **No approach declared means the identity.** The default instance has
+        to be a true no-op: it is what every stream without a `tracker_to_ee`
+        entry gets, and a frame quietly rotated by whichever seed was convenient
+        is exactly the silent failure this module exists to prevent.
         """
-        z_axis = AXES[self.approach]
-        seed = AXES["+x"] if abs(float(z_axis[0])) < 0.9 else AXES["+y"]
-        x_seed = seed - float(seed @ z_axis) * z_axis
-        x_seed /= np.linalg.norm(x_seed)
-        y_seed = np.cross(z_axis, x_seed)
+        if self.approach is None:
+            return np.eye(3)
+        x_axis = AXES[self.approach]
+        seed = AXES["+y"] if abs(float(x_axis[1])) < 0.9 else AXES["+z"]
+        y_seed = seed - float(seed @ x_axis) * x_axis
+        y_seed /= np.linalg.norm(y_seed)
+        z_seed = np.cross(x_axis, y_seed)
         angle = np.radians(self.spin)
-        x_axis = np.cos(angle) * x_seed + np.sin(angle) * y_seed
-        y_axis = np.cross(z_axis, x_axis)
+        y_axis = np.cos(angle) * y_seed + np.sin(angle) * z_seed
+        z_axis = np.cross(x_axis, y_axis)
         return np.stack([x_axis, y_axis, z_axis], axis=1)
 
     def translation(self) -> np.ndarray:
         """Tracker origin -> two-finger midpoint, in tracker axes."""
         rotation = self.rotation()
         return (
-            self.distance * rotation[:, 2]
-            + self.lateral[0] * rotation[:, 0]
-            + self.lateral[1] * rotation[:, 1]
+            self.distance * rotation[:, 0]
+            + self.lateral[0] * rotation[:, 1]
+            + self.lateral[1] * rotation[:, 2]
         )
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> "TrackerToEe":
         lateral = tuple(float(v) for v in (raw.get("lateral") or (0.0, 0.0)))
         return cls(
-            approach=str(raw.get("approach", "+z")),
+            approach=(str(raw["approach"]) if raw.get("approach") is not None else None),
             distance=float(raw.get("distance", 0.0)),
             lateral=lateral,  # type: ignore[arg-type]
             spin=float(raw.get("spin", 0.0)),

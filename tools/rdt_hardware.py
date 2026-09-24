@@ -45,7 +45,7 @@ different name.
 `tools/rdt_convert.py` writes this after each conversion. To rewrite the
 manifest of a dataset converted earlier, from the episodes it actually holds:
 
-    python tools/rdt_hardware.py --dataset /archive/lerobot/TacVerse/raw/xtac-rdt-umi-*
+    python tools/rdt_hardware.py --dataset ~/.cache/huggingface/lerobot/TacVerse-RDT-Test/xtac-rdt-umi-*
 """
 
 from __future__ import annotations

@@ -55,6 +55,9 @@ EPISODE_NAME = re.compile(r"^ep_(\d{8})_(\d{6})$")
 DEFAULT_RAW = Path("/data/data4/umi_data")
 DEFAULT_SCHEDULE = Path.home() / "Documents/TacVerse-RDT-Rules/采集任务时间安排表.xlsx"
 REPO = Path(__file__).resolve().parent.parent
+# RDT conversions are still under test, so they land beside the other RDT test
+# datasets, not in the released TacVerse tree.
+DEFAULT_OUTPUT = Path.home() / ".cache/huggingface/lerobot/TacVerse-RDT-Test"
 
 
 @dataclass
@@ -238,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--schedule", type=Path, default=DEFAULT_SCHEDULE)
     parser.add_argument("--catalogue", type=Path, default=REPO / "configs/tacverse_rdt_catalogue.yaml")
     parser.add_argument("--config", type=Path, default=REPO / "configs/tacverse_rdt.yaml")
-    parser.add_argument("--output", type=Path, default=Path("/archive/lerobot/TacVerse/raw"))
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--prefix", default="xtac-rdt-umi")
     parser.add_argument("--only", help="Convert just this dataset name.")
     parser.add_argument("--limit", type=int, help="Take only the first N episodes of each group (for a trial run).")

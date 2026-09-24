@@ -167,7 +167,7 @@ def convert_group(group: Group, output_root: Path, config_path: Path, workers: i
             "detail": str(stop),
             "seconds": round(time.time() - started, 1),
         }
-    write_hardware(destination, group.episodes, config.robot_type)
+    write_hardware(destination, config.robot_type)
 
     info = json.loads((destination / "meta" / "info.json").read_text(encoding="utf-8"))
     sources = json.loads((destination / "meta" / "sources.json").read_text(encoding="utf-8"))

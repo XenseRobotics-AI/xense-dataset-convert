@@ -29,6 +29,10 @@ warn_sync_gap_frames: 1.5
 # world rotation is exact; the tracker->EE numbers are PROVISIONAL (no CAD, no
 # hardware to measure) -- see hdf52lerobot/ee_transform.py for what the pose
 # data does and does not support, and set `measured: true` once they are real.
+#
+# Both halves land in the corpus-wide convention: X forward, Y left, Z up, for
+# the world and for the EE frame alike. `approach` names the tracker axis that
+# points at the jaws; it becomes the EE's +X.
 world_frame: vive_to_xense
 tracker_to_ee:
   left_tcp:

@@ -45,9 +45,13 @@ def test_quaternion_path_matches_the_existing_6d_conversion():
     assert np.allclose(direct, through)
 
 
-def test_approach_axis_becomes_the_eef_z():
+def test_approach_axis_becomes_the_eef_x():
+    # X forward, Y left, Z up -- the corpus-wide convention, world and body
+    # alike. `approach` names the tracker axis pointing at the jaws, and that
+    # is the one that becomes forward.
     body = TrackerToEe(approach="+z", distance=0.22)
-    assert np.allclose(body.rotation()[:, 2], [0, 0, 1])
+    assert np.allclose(body.rotation()[:, 0], [0, 0, 1])
+    assert abs(float(np.linalg.det(body.rotation())) - 1.0) < 1e-12
     assert np.allclose(body.translation(), [0, 0, 0.22])
     # The offset rides with the tracker: rotate the tracker 90 deg about +X and
     # the EE must move along the rotated axis, not the world one.
@@ -60,8 +64,9 @@ def test_approach_axis_becomes_the_eef_z():
 def test_spin_rotates_the_jaw_axis_about_the_approach():
     zero = TrackerToEe(approach="+z", distance=0.2)
     ninety = TrackerToEe(approach="+z", distance=0.2, spin=90.0)
-    assert np.allclose(zero.rotation()[:, 2], ninety.rotation()[:, 2])
-    assert abs(float(zero.rotation()[:, 0] @ ninety.rotation()[:, 0])) < 1e-9
+    # Forward is untouched; the other two turn about it.
+    assert np.allclose(zero.rotation()[:, 0], ninety.rotation()[:, 0])
+    assert abs(float(zero.rotation()[:, 1] @ ninety.rotation()[:, 1])) < 1e-9
     # A pure spin cannot move the origin when there is no lateral offset.
     assert np.allclose(zero.translation(), ninety.translation())
 
@@ -87,11 +92,33 @@ def test_world_step_sends_steamvr_up_to_z_up():
     assert abs(np.linalg.det(VIVE_TO_WORLD_R) - 1.0) < 1e-12
 
 
+def test_an_unconfigured_stream_is_a_true_no_op():
+    """No approach declared means the identity, not "approach happens to be +z".
+
+    Every stream without a `tracker_to_ee` entry gets the default instance, and
+    on a rig whose recorder already places the frame — TacCap — rotating it by
+    whichever seed was convenient would be silent and wrong.
+    """
+    assert TrackerToEe().is_identity
+    assert np.allclose(TrackerToEe().rotation(), np.eye(3))
+    assert not TrackerToEe(approach="+z", distance=0.22).is_identity
+
+
+def test_an_offset_without_an_approach_is_a_config_error():
+    # There is no axis for `distance` to run along, so this can only be a typo.
+    with pytest.raises(ValueError, match="approach is required"):
+        TrackerToEe(distance=0.22)
+    with pytest.raises(ValueError, match="approach is required"):
+        TrackerToEe(spin=90.0)
+
+
 def test_config_rejects_an_unknown_world_frame_or_stream():
     with pytest.raises(ValueError, match="world_frame"):
         ConverterConfig(world_frame="y_up")
     with pytest.raises(ValueError, match="tracker_to_ee"):
-        ConverterConfig(tracker_to_ee={"nope_tcp": TrackerToEe(distance=0.1)})
+        ConverterConfig(
+            tracker_to_ee={"nope_tcp": TrackerToEe(approach="+z", distance=0.1)}
+        )
 
 
 def test_config_parses_the_profile_mapping():

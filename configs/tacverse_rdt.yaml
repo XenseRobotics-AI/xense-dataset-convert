@@ -34,7 +34,7 @@
 #
 #   hdf52lerobot --config configs/tacverse_rdt.yaml \
 #       --input /archive/TacVerse-RDT/035 --input /archive/TacVerse-RDT/036 \
-#       --output /archive/TacVerse/<name> --task "<task text>"
+#       --output ~/.cache/huggingface/lerobot/TacVerse-RDT-Test/<name> --task "<task text>"
 
 fps: 20
 robot_type: bi_rdt_gripper

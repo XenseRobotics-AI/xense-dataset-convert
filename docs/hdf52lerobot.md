@@ -179,7 +179,7 @@ for rig in 035 036; do
   hdf52lerobot --config configs/tacverse_rdt.yaml \
     --tasks configs/tacverse_rdt_tasks.yaml \
     --input /archive/TacVerse-RDT-Raw/$rig \
-    --output /archive/lerobot/TacVerse/TacVerse-RDT-$rig
+    --output ~/.cache/huggingface/lerobot/TacVerse-RDT-Test/TacVerse-RDT-$rig
 done
 ```
 

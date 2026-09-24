@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.rdt_convert import (  # noqa: E402
+    DEFAULT_OUTPUT,
     DEFAULT_RAW,
     DEFAULT_SCHEDULE,
     REPO,
@@ -63,7 +64,7 @@ def human(seconds: float) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--output", type=Path, default=Path("/archive/lerobot/TacVerse/raw"))
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--raw", type=Path, default=DEFAULT_RAW)
     parser.add_argument("--schedule", type=Path, default=DEFAULT_SCHEDULE)
     parser.add_argument("--catalogue", type=Path, default=REPO / "configs/tacverse_rdt_catalogue.yaml")

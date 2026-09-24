@@ -5,7 +5,7 @@
 # rig has no head tracker, so nothing contributes a head pose and the third
 # camera is a fixed side view rather than a headset camera.
 #
-# Three things differ from what this converter's defaults assume.
+# Five things differ from what this converter's defaults assume.
 #
 # 1. The clock. The recorder's polling
 # loop targets 30 Hz but stalls often enough to average 20 to 24 Hz, with the
@@ -61,6 +61,26 @@ keep_source_timestamp: true
 # which is what a quality pass downstream filters on.
 max_sync_gap_frames: 6.0
 warn_sync_gap_frames: 2.0
+
+# 5. Pose frame. The recorder writes the Vive tracker's pose under `{side}_tcp`,
+# not a TCP. Same two settings as configs/hdf52lerobot.yaml, which is where the
+# reasoning lives: the world rotation is exact, the tracker->EE numbers are
+# PROVISIONAL until `measured: true`. Both land in the corpus-wide X forward,
+# Y left, Z up. Without them this profile produced raw tracker poses.
+world_frame: vive_to_xense
+tracker_to_ee:
+  left_tcp:
+    approach: "+z"
+    distance: 0.22
+    lateral: [0.0, 0.0]
+    spin: 0.0
+    measured: false
+  right_tcp:
+    approach: "+z"
+    distance: 0.22
+    lateral: [0.0, 0.0]
+    spin: 0.0
+    measured: false
 
 master_clock: left_tcp
 state_layout:

@@ -2,12 +2,16 @@
 
 Convert MCAP episode files into a LeRobot v3.0 dataset.
 
+Both MCAP directions now default to XTac, with source preservation enabled.
+See [XTac lossless round trips](xtac-lossless-roundtrip.md) for the exact
+restoration contract, storage costs, overrides and `--no-preserve-source`.
+
 Two source layouts (dialects) are supported, chosen with `--dialect`:
 
 | Dialect | Source | Default |
 | --- | --- | --- |
 | `xtac` | XTacData recordings from the XTac-UMI-G1 grippers | ✅ |
-| `lerobot_roundtrip` | the ROS2 CDR layout this repository's `lerobot2mcap` emits | |
+| `lerobot_roundtrip` | the legacy ROS2 CDR layout emitted with an explicit dialect | |
 
 Each `.mcap` file is one episode in both dialects.
 
@@ -30,7 +34,7 @@ are protobuf `foxglove.CompressedVideo` streams of inter-frame H.264:
 | `/camera/right/tactile_2/h264` | `observation.images.right_tactile_right` |
 
 `fps`, the vector component names, `robot_type` (`xtac_umi_g1`) and the
-per-camera calibration come from the MCAP **metadata records**
+per-camera calibration in raw recordings come from the MCAP **metadata records**
 (`xense_train_mcap`, `episode`), not attachments. `observation.tracker_confidence`
 (the PICO drift warning) is read from `/pico/pose` and paired to each state.
 
@@ -41,8 +45,11 @@ tactile cameras' `taccap.rectify_config` merged into `meta/info.json`. The
 `tracker_to_ee` transform is left null: the recorded poses are already the
 end-effector (TCP).
 
-The task text has no human-readable default in the source (only a `task_id`), so
-pass `--task` for a real instruction.
+Raw recordings may provide only a `task_id`; pass `--task` for a real instruction.
+New LeRobot exports include task texts and typed extra-feature declarations in
+`xense_lerobot` metadata, along with checksummed source-file attachments.
+Default return conversion restores those original files exactly. Without source
+preservation, the reader builds a training projection and writes RGB lossless video.
 
 ## `lerobot_roundtrip` dialect
 

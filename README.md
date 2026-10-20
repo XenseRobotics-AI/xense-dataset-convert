@@ -43,7 +43,7 @@ The `[dev]` extra adds `pytest` and `ruff`; everything else is a hard dependency
 
 ### Which lerobot
 
-`lerobot[dataset]>=0.5.1,<0.7`. The on-disk format is `v3.0` in every release
+`lerobot[dataset]>=0.6.1,<0.7`. The on-disk format is `v3.0` in every release
 of that range; the cap is about lerobot's *Python API*, which three of the four
 converters call:
 
@@ -54,17 +54,16 @@ converters call:
 | `mcap2lerobot` | `LeRobotDataset.create` / `add_frame` / `save_episode` / `finalize` |
 | `hdf52lerobot` | none: it writes the v3.0 layout directly |
 
-Both ends of the range were exercised end to end (every CLI plus the Python
-facade, on a synthetic recording): 0.5.1 and 0.6.1. Bump the cap after testing
-a new minor rather than leaving it open, because 0.6 already reorganised the
-writer once. The `[dataset]` extra matters from 0.6 on, where `datasets`,
-`pyarrow`, `pandas` and `torchcodec` left lerobot's core dependencies; 0.5.x
-ignores it.
+LeRobot 0.6.1 is exercised with the real writer. The minimum now follows the
+encoder configuration API required for RGB lossless XTac conversion; the old
+0.5.x fork no longer satisfies it. The `[dataset]` extra installs `datasets`,
+`pyarrow`, `pandas` and `torchcodec`, which moved out of the core dependencies.
+Bump the upper cap after testing a new minor.
 
-The [`xense-taccap-lerobot`](https://github.com/Vertax42/xense-taccap-lerobot)
-fork (`0.5.1+xtac.0.0.6`) still satisfies the range, so installing into an
-environment that already has it leaves it in place: PEP 440 sorts a local
-version above the plain release.
+Both MCAP directions default to **XTac**. Complete return conversion preserves
+checksummed source payloads as well as the readable streams/training projection.
+See [XTac lossless round trips](docs/xtac-lossless-roundtrip.md) for commands,
+storage costs, edit/subset handling and legacy CDR compatibility.
 
 ## Unified Python interface
 
@@ -98,10 +97,12 @@ loads torch. `details` carries `total_episodes` / `total_frames` for LeRobot
 targets, read back from `meta/info.json`; no converter returns counts directly,
 so the key is absent rather than guessed when the metadata cannot be read.
 
-One gap: `video_preset` and `video_crf` are not accepted for LeRobot → MCAP.
+`dialect` and `preserve_source` are supported in both MCAP directions.
+`video_preset` and `video_crf` are not accepted for LeRobot → MCAP.
 `lerobot2mcap` reads them from module-level globals rather than taking them as
 arguments, so honouring them here would mean mutating process-wide state. Set
-`lerobot2mcap.VIDEO_ENCODER_CRF` yourself, or use that package's CLI.
+`lerobot2mcap.VIDEO_ENCODER_CRF` yourself, or use that package's CLI for the
+legacy CDR path. XTac always uses RGB lossless video.
 
 ## The converters
 

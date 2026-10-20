@@ -199,6 +199,37 @@ def test_converts_multiple_mcap_files_to_one_dataset(tmp_path):
     assert dataset.finalized is True
 
 
+def test_removes_empty_image_dirs_after_successful_finalize(tmp_path):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    path = input_dir / "episode_000.mcap"
+    path.touch()
+    output = tmp_path / "output"
+    retained_file = output / "images" / "retained" / "frame.png"
+
+    class DatasetWithImageDirs(FakeDataset):
+        def finalize(self):
+            empty_dir = Path(self.kwargs["root"]) / "images" / "observation.images.head"
+            empty_dir.mkdir(parents=True)
+            retained_file.parent.mkdir(parents=True)
+            retained_file.touch()
+            super().finalize()
+
+    converter = McapToLeRobotConverter(
+        inputs=[input_dir],
+        output_root=output,
+        repo_id="local/test",
+        reader=FakeReader({path.name: make_episode(path)}),
+        dataset_factory=lambda **kwargs: DatasetWithImageDirs(kwargs),
+    )
+
+    converter.convert()
+
+    assert not (output / "images" / "observation.images.head").exists()
+    assert retained_file.is_file()
+    assert (output / "images" / "retained").is_dir()
+
+
 def test_out_of_sync_episode_fails_before_the_dataset_is_created(tmp_path):
     input_dir = tmp_path / "input"
     input_dir.mkdir()

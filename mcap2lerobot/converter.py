@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import errno
 import inspect
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -406,7 +408,22 @@ class McapToLeRobotConverter:
                     pass
             raise
         self._write_dialect_metadata(source_metadata, robot_type)
+        self._remove_empty_image_dirs()
         return self.output_root
+
+    def _remove_empty_image_dirs(self) -> None:
+        """Remove LeRobot's unused image directories without touching files."""
+        image_root = self.output_root / "images"
+        if not image_root.is_dir() or image_root.is_symlink():
+            return
+
+        for directory, _, _ in os.walk(image_root, topdown=False, followlinks=False):
+            path = Path(directory)
+            try:
+                path.rmdir()
+            except OSError as error:
+                if error.errno not in (errno.ENOTEMPTY, errno.EEXIST, errno.ENOENT):
+                    logger.warning("Could not remove empty image directory %s: %s", path, error)
 
     def _write_dialect_metadata(
         self, source_metadata: list[dict[str, Any] | None], robot_type: str

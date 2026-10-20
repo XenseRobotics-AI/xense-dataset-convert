@@ -140,7 +140,7 @@ lerobot2mcap download lerobot/pusht -j8
 - `-o, --output-dir`: Output directory for MCAP files (default: `./{dataset_name}_mcap`)
 - `-e, --episodes`: Specific episode indices to download (default: all episodes)
 - `-j, --jobs`: Cameras sliced and encoded concurrently within one episode
-  (default: min(8, available CPU count // 2), with a minimum of 1)
+  (default: min(8, available CPU count // 2), with a minimum of 1; `0` auto-detects)
 
 **Output:**
 
@@ -171,7 +171,7 @@ lerobot2mcap convert /path/to/dataset -o ./mcap_output -f ./my_converter_functio
 - `-o, --output-dir`: Output directory for MCAP files (default: `<input_dir>/mcap_conversion`)
 - `-e, --episodes`: Specific episode indices to convert (default: all episodes)
 - `-j, --jobs`: Cameras sliced and encoded concurrently within one episode
-  (default: min(8, available CPU count // 2), with a minimum of 1)
+  (default: min(8, available CPU count // 2), with a minimum of 1; `0` auto-detects)
 - `-f, --converter-functions`: Path to custom converter functions YAML (default: built-in `configs/converter_functions.yaml`)
 
 **Performance (50 episodes, 16-core CPU):**

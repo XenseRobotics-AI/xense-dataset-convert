@@ -337,7 +337,7 @@ tabular2mcap.mcap_converter.compressed_video_message_iterator = (
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-from .converter import LeRobotConverter
+from .converter import LeRobotConverter, resolve_intra_workers
 
 try:
     # The distribution is xense-dataset-convert; this package is one of the four
@@ -390,7 +390,7 @@ def convert_dataset(
     converter_functions_path: Path,
     chunks: list[int] | None = None,
     episodes: list[int] | None = None,
-    intra_workers: int = 8,
+    intra_workers: int | None = None,
 ) -> bool:
     """
     Convert a LeRobot dataset to MCAP format.
@@ -402,7 +402,8 @@ def convert_dataset(
         output_dir: Output directory for MCAP files
         converter_functions_path: Path to converter_functions.yaml
         episodes: List of episode indices to convert (None = all episodes)
-        intra_workers: Per-episode internal parallelism (default: 8)
+        intra_workers: Per-episode internal parallelism (default: auto-detected).
+            Set to 0 to auto-detect or a positive number to override.
     Returns:
         True only when every requested episode was converted; False when any
         episode was skipped or the run failed outright (the cause is logged).
@@ -412,8 +413,6 @@ def convert_dataset(
         logger.info(f"  Episodes: {episodes}")
     logger.info(f"  Output: {output_dir}")
     logger.info(f"  Converter functions: {converter_functions_path}")
-    logger.info(f"  Intra-episode workers: {intra_workers}")
-
     try:
         # Initialize the converter
         converter = LeRobotConverter(
@@ -421,6 +420,7 @@ def convert_dataset(
             converter_functions_path=converter_functions_path,
             intra_workers=intra_workers,
         )
+        logger.info(f"  Intra-episode workers: {converter.intra_workers}")
 
         # Show conversion plan
         logger.info("\n" + converter.get_conversion_plan(chunks))
@@ -506,9 +506,7 @@ def main():
         nargs="+",
         help="Episode IDs to download (e.g., 0 1 2). If not specified, all episodes will be downloaded.",
     )
-    from xense_dataset_convert._parallelism import available_cpu_count
-
-    default_workers = max(1, min(8, available_cpu_count() // 2))
+    default_workers = resolve_intra_workers(None)
     download_parser.add_argument(
         "-j",
         "--jobs",
@@ -517,7 +515,7 @@ def main():
         help=(
             f"Per-episode intra-parallelism (default: {default_workers}). "
             f"Episodes themselves run sequentially; within each episode this many "
-            f"camera slice+encode jobs run concurrently."
+            f"camera slice+encode jobs run concurrently. Pass 0 to auto-detect."
         ),
     )
     _add_video_encoder_args(download_parser)
@@ -557,7 +555,7 @@ def main():
         help=(
             f"Per-episode intra-parallelism (default: {default_workers}). "
             f"Episodes themselves run sequentially; within each episode this many "
-            f"camera slice+encode jobs run concurrently."
+            f"camera slice+encode jobs run concurrently. Pass 0 to auto-detect."
         ),
     )
     _add_video_encoder_args(convert_parser)

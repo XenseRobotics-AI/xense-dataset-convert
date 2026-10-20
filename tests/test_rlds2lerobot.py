@@ -68,6 +68,33 @@ def test_droid_features_and_streaming_conversion(tmp_path):
     assert dataset.kwargs["use_videos"] is True
 
 
+def test_removes_empty_image_dirs_after_successful_finalize(tmp_path):
+    output = tmp_path / "output"
+    retained_file = output / "images" / "retained" / "frame.png"
+
+    class DatasetWithImageDirs(FakeDataset):
+        def finalize(self):
+            empty_dir = self.kwargs["root"] / "images" / "observation.images.head"
+            empty_dir.mkdir(parents=True)
+            retained_file.parent.mkdir(parents=True)
+            retained_file.touch()
+            super().finalize()
+
+    converter = RldsToLeRobotConverter(
+        tmp_path / "source",
+        output,
+        ConverterConfig(max_episodes=1, show_progress=False),
+        episode_reader=lambda *_: iter((episode(),)),
+        dataset_factory=lambda **kwargs: DatasetWithImageDirs(**kwargs),
+    )
+
+    converter.convert()
+
+    assert not (output / "images" / "observation.images.head").exists()
+    assert retained_file.is_file()
+    assert (output / "images" / "retained").is_dir()
+
+
 def test_missing_configured_image_is_allowed():
     data = episode()
     del data["steps"]["observation"]["exterior_image_2_left"]

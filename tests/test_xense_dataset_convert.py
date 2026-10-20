@@ -138,6 +138,7 @@ def test_lerobot_to_zarr_opens_the_dataset_from_a_path(monkeypatch, tmp_path):
         def __init__(self, dataset, output_path, **kwargs):
             opened["dataset"] = dataset
             opened["output_path"] = output_path
+            opened["kwargs"] = kwargs
 
         def convert(self, limit=None):
             opened["limit"] = limit
@@ -158,12 +159,18 @@ def test_lerobot_to_zarr_opens_the_dataset_from_a_path(monkeypatch, tmp_path):
     module.zarr_converter = sys.modules["lerobot2zarr.zarr_converter"]
 
     result = convert(
-        Format.LEROBOT, Format.ZARR, tmp_path, tmp_path / "out.zarr", limit=5
+        Format.LEROBOT,
+        Format.ZARR,
+        tmp_path,
+        tmp_path / "out.zarr",
+        limit=5,
+        workers=2,
     )
 
     assert opened["root"] == tmp_path
     assert opened["dataset"] == "opened-dataset"
     assert opened["limit"] == 5
+    assert opened["kwargs"]["workers"] == 2
     assert result.output_path == tmp_path / "out.zarr"
 
 

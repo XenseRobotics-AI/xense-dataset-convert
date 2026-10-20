@@ -17,6 +17,9 @@ assuming a fixed camera layout, robot type, or number of cameras.
 - Records exclusive episode boundaries in `meta/episode_ends` and original
   episode IDs in `meta/episode_ids`.
 - Supports selecting episodes and limiting frame count for quick validation.
+- Writes independent features concurrently, with a bounded queue to limit
+  memory use; `--workers` accepts an explicit worker count (`0` auto-detects
+  CPUs available to the process).
 
 ## Installation
 
@@ -36,6 +39,12 @@ Convert a local LeRobot dataset:
 
 ```bash
 lerobot2zarr /path/to/lerobot/dataset -o ./dataset.zarr
+```
+
+Set the number of feature writers when tuning for a particular machine:
+
+```bash
+lerobot2zarr /path/to/lerobot/dataset --workers 4 -o ./dataset.zarr
 ```
 
 Select episodes or convert only a small prefix for validation:

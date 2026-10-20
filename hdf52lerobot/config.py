@@ -283,6 +283,8 @@ class ConverterConfig:
             )
         if self.codec_threads < 0:
             raise ValueError("codec_threads must be 0 (auto) or positive")
+        if self.workers < 0:
+            raise ValueError("workers must be 0 (auto) or positive")
         if self.rgb_bias_frames <= 0:
             raise ValueError("rgb_bias_frames must be positive")
         for name, reference in self.rgb_references.items():

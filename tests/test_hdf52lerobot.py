@@ -673,6 +673,11 @@ def test_codec_threads_reach_the_encoder(tmp_path: Path):
         ConverterConfig(codec_threads=-1)
 
 
+def test_camera_workers_must_be_nonnegative():
+    with pytest.raises(ValueError, match="workers"):
+        ConverterConfig(workers=-1)
+
+
 def test_encoder_options_follow_the_encoder():
     """x264 takes CRF and a keyframe floor; NVENC takes a rate-control mode and
     a QP, and rejects the other two."""

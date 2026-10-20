@@ -7,7 +7,6 @@ import datetime
 import json
 import math
 from dataclasses import asdict
-import os
 import hashlib
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +26,7 @@ from .stats import StatsAccumulator, downsample_hwc, sample_positions
 from .sync import SyncReport, build_sync
 from .video import VideoAggregator
 from .writer import DatasetWriter, VideoPlacement, seconds_to_ns
+from xense_dataset_convert._parallelism import available_cpu_count
 
 logger = get_logger("hdf52lerobot")
 
@@ -219,7 +219,7 @@ class Hdf5ToLeRobotConverter:
         # One pool for the whole run: a pool per episode means fresh threads,
         # and every fresh thread can pull a new malloc arena that is never
         # returned, so memory would creep up with the episode count.
-        workers = self.config.workers or max(1, (os.cpu_count() or 2) // 2)
+        workers = self.config.workers or max(1, available_cpu_count() // 2)
         pool = ThreadPoolExecutor(max_workers=min(workers, len(first.videos) or 1))
         interrupted = False
         try:

@@ -43,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=8.0,
         help="Target chunk size for non-image arrays in MiB (default: 8)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Parallel feature writers (0 = automatically use available CPUs)",
+    )
     return parser
 
 
@@ -72,6 +78,7 @@ def main() -> int:
                 "selected_episodes": args.episodes,
             },
             chunk_bytes=int(args.chunk_mib * 1024 * 1024),
+            workers=args.workers,
         )
         converter.convert(limit=args.limit)
     except Exception as error:

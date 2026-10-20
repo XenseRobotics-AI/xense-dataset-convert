@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import json
 import math
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 import numpy as np
 
 from .logger import get_logger
+from xense_dataset_convert._parallelism import available_cpu_count
 
 logger = get_logger("lerobot2zarr")
 
@@ -89,12 +92,16 @@ class LeRobotZarrConverter:
         feature_metadata: Mapping[str, Mapping[str, Any]] | None = None,
         source: Mapping[str, Any] | None = None,
         chunk_bytes: int = 8 * 1024 * 1024,
+        workers: int = 0,
     ):
         self.dataset = dataset
         self.output_path = Path(output_path)
         self.feature_metadata = dict(feature_metadata or {})
         self.source = dict(source or {})
         self.chunk_bytes = chunk_bytes
+        if workers < 0:
+            raise ValueError("workers must be 0 (auto) or positive")
+        self.workers = workers
 
     def convert(self, limit: int | None = None) -> Path:
         import zarr
@@ -117,8 +124,6 @@ class LeRobotZarrConverter:
         root = zarr.open_group(str(self.output_path), mode="w")
         data_group = root.create_group("data")
         meta_group = root.create_group("meta")
-        compressor = Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE)
-
         arrays = {}
         for spec in specs:
             arrays[spec.source_name] = data_group.create_dataset(
@@ -126,25 +131,51 @@ class LeRobotZarrConverter:
                 shape=(total_frames, *spec.shape),
                 chunks=self._chunks(spec, total_frames),
                 dtype=spec.dtype,
-                compressor=compressor,
+                compressor=Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE),
             )
 
         episode_indices = np.empty(total_frames, dtype=np.int64)
-        for index in range(total_frames):
-            row = first_row if index == 0 else self.dataset[index]
-            for spec in specs:
-                if spec.source_name not in row:
-                    raise KeyError(
-                        f"Feature {spec.source_name!r} is missing from frame {index}"
-                    )
-                value = self._prepare_value(spec, row[spec.source_name])
-                if value.shape != spec.shape:
-                    raise ValueError(
-                        f"Feature {spec.source_name!r} changed shape at frame {index}: "
-                        f"expected {spec.shape}, got {value.shape}"
-                    )
-                arrays[spec.source_name][index] = value
-            episode_indices[index] = self._episode_index(row, index)
+        worker_count = min(self.workers or available_cpu_count(), len(specs))
+        executor = ThreadPoolExecutor(max_workers=worker_count) if worker_count > 1 else None
+        write_locks = (
+            {spec.source_name: Lock() for spec in specs} if executor is not None else {}
+        )
+        pending: set[Future[None]] = set()
+        pending_limit = max(1, worker_count * 2)
+        logger.info(
+            f"Writing {len(specs)} features with {worker_count} worker(s)"
+        )
+        try:
+            for index in range(total_frames):
+                row = first_row if index == 0 else self.dataset[index]
+                for spec in specs:
+                    if spec.source_name not in row:
+                        raise KeyError(
+                            f"Feature {spec.source_name!r} is missing from frame {index}"
+                        )
+                    if executor is None:
+                        self._write_feature_value(
+                            arrays[spec.source_name], spec, row[spec.source_name], index
+                        )
+                    else:
+                        while len(pending) >= pending_limit:
+                            self._wait_for_write(pending)
+                        pending.add(
+                            executor.submit(
+                                self._write_feature_value,
+                                arrays[spec.source_name],
+                                spec,
+                                row[spec.source_name],
+                                index,
+                                write_locks[spec.source_name],
+                            )
+                        )
+                episode_indices[index] = self._episode_index(row, index)
+            while pending:
+                self._wait_for_write(pending)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
 
         episode_ends, episode_ids = self._episode_boundaries(episode_indices)
         meta_group.create_dataset(
@@ -278,6 +309,33 @@ class LeRobotZarrConverter:
         if spec.kind in {"video", "image"}:
             return _image_to_uint8_hwc(value)
         return _to_numpy(value).astype(spec.dtype, copy=False)
+
+    def _write_feature_value(
+        self,
+        array: Any,
+        spec: FeatureSpec,
+        value: Any,
+        index: int,
+        write_lock: Any | None = None,
+    ) -> None:
+        prepared = self._prepare_value(spec, value)
+        if prepared.shape != spec.shape:
+            raise ValueError(
+                f"Feature {spec.source_name!r} changed shape at frame {index}: "
+                f"expected {spec.shape}, got {prepared.shape}"
+            )
+        if write_lock is None:
+            array[index] = prepared
+        else:
+            with write_lock:
+                array[index] = prepared
+
+    @staticmethod
+    def _wait_for_write(pending: set[Future[None]]) -> None:
+        completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+        pending.difference_update(completed)
+        for future in completed:
+            future.result()
 
     @staticmethod
     def _episode_index(row: Mapping[str, Any], frame_index: int) -> int:

@@ -506,10 +506,9 @@ def main():
         nargs="+",
         help="Episode IDs to download (e.g., 0 1 2). If not specified, all episodes will be downloaded.",
     )
-    import os
+    from xense_dataset_convert._parallelism import available_cpu_count
 
-    default_workers = min(8, (os.cpu_count() or 2) // 2)
-    default_workers = max(1, default_workers)
+    default_workers = max(1, min(8, available_cpu_count() // 2))
     download_parser.add_argument(
         "-j",
         "--jobs",

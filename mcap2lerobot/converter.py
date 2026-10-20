@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import json
 import logging
 import math
 import re
@@ -330,6 +331,7 @@ class McapToLeRobotConverter:
         self.output_root = Path(output_root).expanduser().resolve()
         self.repo_id = repo_id
         self.config = config or ConverterConfig()
+        self._native_io = reader is None and dataset_factory is None
         self.reader = reader or self._default_reader(self.config)
         self.dataset_factory = dataset_factory or self._default_dataset_factory
 
@@ -342,7 +344,7 @@ class McapToLeRobotConverter:
         return McapEpisodeReader(config)
 
     @staticmethod
-    def _default_dataset_factory(video_codec: str | None = None, **kwargs: Any) -> DatasetWriter:
+    def _default_dataset_factory(video_codec: str | None = None, lossless_video: bool = False, **kwargs: Any) -> DatasetWriter:
         try:
             from lerobot.datasets.lerobot_dataset import LeRobotDataset
         except ImportError as error:
@@ -352,7 +354,14 @@ class McapToLeRobotConverter:
         # saved. Hand it a copy so `_write_episode`'s layout check keeps comparing
         # against the layout we built, not against lerobot's annotated one.
         kwargs["features"] = copy.deepcopy(kwargs["features"])
-        kwargs.update(encoder_kwargs(LeRobotDataset, video_codec))
+        if lossless_video and kwargs.get("use_videos"):
+            from .lossless_video import rgb_encoder
+
+            if "rgb_encoder" not in inspect.signature(LeRobotDataset.create).parameters:
+                raise RuntimeError("Lossless XTac video writing requires lerobot>=0.6.1")
+            kwargs["rgb_encoder"] = rgb_encoder()
+        else:
+            kwargs.update(encoder_kwargs(LeRobotDataset, video_codec))
         return LeRobotDataset.create(**kwargs)
 
     def convert(self) -> Path:
@@ -361,6 +370,15 @@ class McapToLeRobotConverter:
             raise ValueError("No .mcap files found")
         if self.output_root.exists():
             raise FileExistsError(f"Output path already exists: {self.output_root}")
+
+        if self._native_io and self.config.dialect == DIALECT_XTAC and self.config.preserve_source:
+            from xense_dataset_convert._lossless import restore_lerobot, source_manifest
+
+            if any(source_manifest(path) is not None for path in mcap_files):
+                if any(value is not None for value in (self.config.fps, self.config.task, self.config.robot_type)):
+                    raise ValueError("Source restoration cannot apply overrides; use --no-preserve-source to transform data")
+                if restore_lerobot(mcap_files, self.output_root):
+                    return self.output_root
 
         first_episode = self.reader.read(mcap_files[0])
         fps = resolve_fps(self.config, first_episode)
@@ -387,6 +405,7 @@ class McapToLeRobotConverter:
             features=features,
             use_videos=bool(first_episode.videos),
             video_codec=video_codec,
+            **({"lossless_video": True} if self._native_io and self.config.dialect == DIALECT_XTAC else {}),
         )
 
         source_metadata: list[dict[str, Any] | None] = [first_episode.source_metadata]
@@ -406,7 +425,29 @@ class McapToLeRobotConverter:
                     pass
             raise
         self._write_dialect_metadata(source_metadata, robot_type)
+        if self._native_io and self.config.dialect == DIALECT_XTAC:
+            self._restore_custom_metadata(first_episode)
+        if self._native_io and self.config.dialect == DIALECT_XTAC and self.config.preserve_source:
+            from xense_dataset_convert._lossless import preserve_mcap
+
+            preserve_mcap(mcap_files, self.output_root)
         return self.output_root
+
+    def _restore_custom_metadata(self, episode: EpisodeData) -> None:
+        """Carry calibration hints without overwriting newly generated video info."""
+        source = episode.info or {}
+        path = self.output_root / "meta/info.json"
+        info = json.loads(path.read_text())
+        if "collection_stack" in source:
+            info["collection_stack"] = source["collection_stack"]
+        for key, spec in source.get("features", {}).items():
+            if key not in info["features"]:
+                continue
+            custom = {name: value for name, value in (spec.get("info") or {}).items()
+                      if not name.startswith("video.")}
+            if custom:
+                info["features"][key].setdefault("info", {}).update(custom)
+        path.write_text(json.dumps(info, indent=2, ensure_ascii=False) + "\n")
 
     def _write_dialect_metadata(
         self, source_metadata: list[dict[str, Any] | None], robot_type: str

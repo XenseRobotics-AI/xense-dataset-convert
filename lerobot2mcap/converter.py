@@ -28,6 +28,8 @@ class LeRobotConverter:
         dataset_root: Path,
         converter_functions_path: Path,
         intra_workers: int = 8,
+        dialect: str = "xtac",
+        preserve_source: bool = True,
     ):
         """
         Initialize LeRobotConverter.
@@ -41,6 +43,10 @@ class LeRobotConverter:
         self.dataset_root = dataset_root
         self.converter_functions_path = converter_functions_path
         self.intra_workers = max(1, intra_workers)
+        if dialect not in ("xtac", "lerobot_roundtrip"):
+            raise ValueError(f"Unknown MCAP dialect: {dialect!r}")
+        self.dialect = dialect
+        self.preserve_source = preserve_source
 
         info_json_path = dataset_root / "meta" / "info.json"
         if not info_json_path.exists():
@@ -104,6 +110,13 @@ class LeRobotConverter:
             partial result is still on disk, but it is reported as a failure:
             a caller that gets True can rely on the output being complete.
         """
+        if self.dialect == "xtac":
+            from xense_dataset_convert._xtac_export import export_xtac
+
+            if chunks is not None:
+                raise ValueError("XTac export uses episode selection, not chunk selection")
+            return export_xtac(self.dataset_info, output_dir, episodes,
+                               self.preserve_source, self.intra_workers)
         logger.info("=" * SEPARATOR_WIDTH)
         logger.info("LeRobot to MCAP Conversion")
         logger.info("=" * SEPARATOR_WIDTH)

@@ -1,6 +1,19 @@
 # lerobot2mcap
 
-Convert LeRobot datasets to MCAP format with automatic configuration generation from dataset metadata. No manual configuration required – just point it at your dataset and go. **This version is primarily focused on LeRobot v3.0 merged-format datasets** (parquet+video merged, per-episode slicing), while remaining backward compatible with v2.1/v2.x. AV1 is supported via a PyAV monkey‑patch.
+Convert LeRobot datasets to MCAP. The default is now **XTac JSON/protobuf**,
+with RGB lossless H.264, extra numeric features and checksummed source files for
+complete return conversion. See [XTac lossless round trips](xtac-lossless-roundtrip.md).
+
+```bash
+lerobot2mcap convert /datasets/source -o /datasets/source-xtac
+mcap2lerobot /datasets/source-xtac -o /datasets/restored
+```
+
+Use a new output directory outside the source. The default output is now the
+sibling `<input_dir>_mcap`. Subsets require `--no-preserve-source`. The legacy
+ROS2 CDR exporter remains available with `--dialect lerobot_roundtrip`;
+the configuration generation, encoder tuning and performance details below
+describe that legacy path.
 
 ## Features (v3.0-first)
 

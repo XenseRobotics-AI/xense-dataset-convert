@@ -26,6 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", required=True, help="New dataset directory")
     parser.add_argument("--repo-id", default=None, help="LeRobot repository ID")
     parser.add_argument(
+        "--preserve-source", action=argparse.BooleanOptionalAction, default=True,
+        help="Restore embedded source files or preserve original MCAPs for exact return conversion",
+    )
+    parser.add_argument(
         "--dialect",
         choices=DIALECTS,
         default=DIALECT_XTAC,
@@ -82,6 +86,7 @@ def main() -> int:
     output = Path(args.output).expanduser().resolve()
     config = ConverterConfig(
         dialect=args.dialect,
+        preserve_source=args.preserve_source,
         state_topic=args.state_topic,
         action_topic=args.action_topic,
         state_field=args.state_field,

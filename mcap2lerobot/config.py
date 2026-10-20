@@ -21,11 +21,11 @@ def normalize_topic(topic: str) -> str:
 
 @dataclass(frozen=True)
 class ConverterConfig:
-    """Settings for MCAP files produced by this repository's ``lerobot2mcap``.
+    """Settings for XTac recordings/exports and the legacy ROS2 CDR layout.
 
     ``fps``, ``task`` and ``robot_type`` are overrides. Left at ``None``, the
     values lerobot2mcap embedded in the MCAP (the source dataset's
-    ``meta/info.json`` and the episode's task texts) are used; only an MCAP that
+    metadata and the episode's task texts) are used; only an MCAP that
     carries none falls back to the module defaults, with ``fps`` then inferred
     from the state timestamps.
     """
@@ -41,6 +41,7 @@ class ConverterConfig:
     max_sync_gap_frames: float = 1.5
     task: str | None = None
     robot_type: str | None = None
+    preserve_source: bool = True
 
     def __post_init__(self) -> None:
         if self.dialect not in DIALECTS:

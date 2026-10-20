@@ -331,6 +331,8 @@ def test_default_mcap_lerobot_mcap_preserves_unknown_channels(dataset, tmp_path)
     pytest.importorskip("lerobot")
     pytest.importorskip("tabular2mcap")
     pytest.importorskip("spdlog")
+    import av
+
     from mcap.reader import make_reader
     from mcap.writer import Writer
     from xense_dataset_convert import Format, convert
@@ -361,6 +363,22 @@ def test_default_mcap_lerobot_mcap_preserves_unknown_channels(dataset, tmp_path)
             writer.add_metadata(record.name, record.metadata)
         writer.finish()
     converted = convert(Format.MCAP, Format.LEROBOT, inputs=tmp_path / "raw", output=tmp_path / "projection")
+    # Verify the usable training projection as well as the retained source:
+    # returning the original MCAP alone would conceal a broken frame writer.
+    table = pd.concat([pd.read_parquet(path) for path in sorted(converted.output_path.glob("data/**/*.parquet"))])
+    for key in ("observation.state", "action", EXTRA, "episode_index", "frame_index", "timestamp"):
+        expected = np.stack(dataset.table[key])
+        # LeRobot stores shape-(1,) numeric features as scalar parquet columns.
+        np.testing.assert_array_equal(np.stack(table[key]).reshape(expected.shape), expected)
+    tasks = pd.read_parquet(converted.output_path / "meta/tasks.parquet")
+    assert [tasks.index[int(index)] for index in table["task_index"]] == [
+        "任务甲" if index == 0 else "task B" for index in dataset.table["task_index"]
+    ]
+    images = []
+    for path in sorted(converted.output_path.glob(f"videos/{CAMERA}/**/*.mp4")):
+        with av.open(str(path)) as container:
+            images.extend(frame.to_ndarray(format="rgb24") for frame in container.decode(video=0))
+    np.testing.assert_array_equal(np.stack(images), dataset.images)
     restored = convert(Format.LEROBOT, Format.MCAP, inputs=converted.output_path, output=tmp_path / "raw-return")
     original = sorted((tmp_path / "raw").glob("*.mcap"))
     returned = sorted(restored.output_path.glob("*.mcap"))

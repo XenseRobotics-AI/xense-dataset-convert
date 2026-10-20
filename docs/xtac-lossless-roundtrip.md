@@ -68,6 +68,20 @@ RGB 无损、全关键帧编码通常比原来的有损帧间视频大得多。�
 
 ## 修改、筛选与兼容
 
+原始 XTac 也可以作为完整往返的起点，两步都使用默认参数：
+
+```bash
+mcap2lerobot /datasets/raw-xtac -o /datasets/projected-lerobot
+lerobot2mcap convert /datasets/projected-lerobot -o /datasets/returned-xtac
+```
+
+返回的是原始 MCAP 文件，文件名和 SHA-256 应与起点一致；原始 H.264 压缩字节、
+未映射传感器 topic、schema、消息时间和采集 metadata 均随原文件保留。
+`meta/source_mcap/` 是该往返所需的数据，不能作为可删除的转换缓存处理。
+中间 LeRobot 的普通训练表和 RGB 视频也应单独验证，不能仅凭原文件恢复成功
+推断训练投影正确。若修改中间数据，默认返回会拒绝过期源快照；此时需选择下面的
+显式转换模式。
+
 需要筛选部分 episode、修改任务/FPS、或将编辑后的训练投影重新导出时，显式使用
 `--no-preserve-source`（Python 为 `preserve_source=False`）。这表示按当前数据重新转换，
 不承诺原始文件完整恢复。默认完整源恢复不允许在恢复时应用任务/FPS/robot type 覆盖。

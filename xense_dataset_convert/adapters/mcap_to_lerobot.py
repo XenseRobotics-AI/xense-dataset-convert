@@ -23,6 +23,8 @@ CONFIG_OPTIONS = frozenset(
         "max_sync_gap_frames",
         "task",
         "robot_type",
+        "image_writer_threads",
+        "encoder_threads",
     }
 )
 ACCEPTED_OPTIONS = CONFIG_OPTIONS | {"repo_id"}

@@ -4,3 +4,8 @@ robot_type: droid
 state_fields: [joint_position, gripper_position]
 action_names: [joint_velocity_0, joint_velocity_1, joint_velocity_2, joint_velocity_3, joint_velocity_4, joint_velocity_5, gripper_position]
 image_fields: [exterior_image_1_left, exterior_image_2_left, wrist_image_left]
+
+# 0 keeps frame staging synchronous; positive values enable background writers.
+image_writer_threads: 0
+# Null divides available CPUs across video cameras; a positive value overrides it.
+encoder_threads: null

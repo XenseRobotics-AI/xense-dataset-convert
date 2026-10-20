@@ -19,6 +19,7 @@ from mcap2lerobot.converter import (
     resolve_robot_type,
     source_video_codec,
 )
+from xense_dataset_convert._lerobot_writer import writer_parallelism_kwargs
 from mcap2lerobot.reader import (
     EpisodeData,
     McapEpisodeReader,
@@ -118,6 +119,35 @@ def test_infers_fps_and_builds_features(tmp_path):
     assert features["observation.state"]["shape"] == (2,)
     assert features["action"]["shape"] == (1,)
     assert features[HEAD]["shape"] == (2, 3, 3)
+
+
+def test_video_encoder_threads_are_budgeted_across_cameras(monkeypatch):
+    class Dataset:
+        @classmethod
+        def create(cls, image_writer_threads=0, encoder_threads=None):
+            pass
+
+    monkeypatch.setattr("xense_dataset_convert._lerobot_writer.available_cpu_count", lambda: 12)
+    features = {
+        "observation.images.head": {"dtype": "video"},
+        "observation.images.wrist": {"dtype": "video"},
+    }
+
+    assert writer_parallelism_kwargs(Dataset, features, 0, None) == {
+        "image_writer_threads": 0,
+        "encoder_threads": 6,
+    }
+    assert writer_parallelism_kwargs(Dataset, features, 4, 2) == {
+        "image_writer_threads": 4,
+        "encoder_threads": 2,
+    }
+
+
+def test_parallelism_config_rejects_invalid_thread_counts():
+    with pytest.raises(ValueError, match="image_writer_threads"):
+        ConverterConfig(image_writer_threads=-1)
+    with pytest.raises(ValueError, match="encoder_threads"):
+        ConverterConfig(encoder_threads=0)
 
 
 def test_nearest_value_enforces_gap():

@@ -29,6 +29,8 @@ class ConverterConfig:
     max_episodes: int | None = None
     use_videos: bool = True
     vcodec: str | None = None
+    image_writer_threads: int = 0
+    encoder_threads: int | None = None
     show_progress: bool = True
     show_progress: bool = True
     extra: dict[str, Any] = field(default_factory=dict)
@@ -40,6 +42,10 @@ class ConverterConfig:
             raise ValueError("state_fields must not be empty")
         if self.max_episodes is not None and self.max_episodes <= 0:
             raise ValueError("max_episodes must be positive")
+        if self.image_writer_threads < 0:
+            raise ValueError("image_writer_threads must not be negative")
+        if self.encoder_threads is not None and self.encoder_threads <= 0:
+            raise ValueError("encoder_threads must be greater than zero")
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ConverterConfig":

@@ -506,6 +506,9 @@ def _add_video_encoder_args(p: argparse.ArgumentParser) -> None:
 
 
 def main():
+    from xense_dataset_convert._progress import configure_cli_logging
+
+    configure_cli_logging()
     parser = argparse.ArgumentParser(
         prog="lerobot2mcap", description="Convert LeRobot datasets to MCAP format"
     )

@@ -10,12 +10,14 @@ from fractions import Fraction
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event
+from time import monotonic
 from typing import Any, Iterator, Sequence
 from urllib.parse import quote
 
 import numpy as np
 
 from ._lossless import add_source_attachments, build_manifest, inventory, restore_mcap, tracked_writer
+from ._progress import Progress
 
 LEROBOT_METADATA = "xense_lerobot"
 logger = logging.getLogger(__name__)
@@ -140,6 +142,9 @@ def export_xtac(dataset: Any, output: Path, episodes: Sequence[int] | None = Non
     from mcap2lerobot.xtac import XTAC_VIDEO_TOPICS
 
     root, output = dataset.dataset_root.resolve(), Path(output).resolve()
+    started = monotonic()
+    logger.info("LeRobot -> XTac: source=%s, output=%s, preserve_source=%s, camera_workers=%d",
+                root, output, preserve_source, intra_workers)
     if intra_workers < 1:
         raise ValueError("intra_workers must be positive")
     if output == root or root in output.parents:
@@ -163,8 +168,9 @@ def export_xtac(dataset: Any, output: Path, episodes: Sequence[int] | None = Non
     with tempfile.TemporaryDirectory(prefix=".xense-xtac-", dir=output.parent) as temporary:
         staging = Path(temporary) / "mcap"
         staging.mkdir()
-        for episode in selected:
-            logger.info("Exporting XTac episode %d (%d episodes selected)", episode, len(selected))
+        for number, episode in enumerate(selected, 1):
+            episode_started = monotonic()
+            logger.info("Episode %d/%d: exporting episode %d", number, len(selected), episode)
             chunk = episode // int(dataset.data.get("chunks_size", 1000))
             files = dataset.get_episode_files(episode, chunk, root)
             frame = pd.read_parquet(files["parquet"])
@@ -220,22 +226,37 @@ def export_xtac(dataset: Any, output: Path, episodes: Sequence[int] | None = Non
                 for topic, key in video_topics.items():
                     video_channels[topic] = writer.register_channel(topic, "protobuf", video_schema)
                 packets = _camera_packets(video_topics, files, len(frame), dataset.data["fps"], intra_workers)
+                progress = Progress(logger, f"Episode {number}/{len(selected)}: encoding/writing video",
+                                    len(frame) * len(video_topics), "camera frames")
+                written = 0
                 try:
                     for topic, key, position, data in packets:
                         stamp = int(times[position])
                         message = video_type(frame_id=key, format="h264", data=data)
                         message.timestamp.FromNanoseconds(stamp)
                         writer.add_message(video_channels[topic], stamp, message.SerializeToString(), stamp, position)
+                        written += 1
+                        progress.update(written)
                 finally:
                     packets.close()
+                progress.update(written, done=True)
                 if manifest is not None:
+                    logger.info("Episode %d/%d: writing preserved source attachments", number, len(selected))
                     add_source_attachments(writer, root, manifest, episode)
+                logger.info("Episode %d/%d: finalizing MCAP indexes", number, len(selected))
                 writer.finish()
-            logger.info("Finished XTac episode %d: %d frames, %d bytes", episode, len(frame), path.stat().st_size)
+            logger.info("Episode %d/%d completed: %d frames, %.2f MiB, elapsed %.1fs",
+                        number, len(selected), len(frame), path.stat().st_size / 1024**2,
+                        monotonic() - episode_started)
         if manifest is not None:
+            logger.info("Verifying source files are unchanged before publishing XTac output")
             expected = {key: manifest[key] for key in ("files", "directories")}
             expected["files"] = [{key: entry[key] for key in ("path", "size", "sha256")} for entry in manifest["files"]]
             if inventory(root) != expected:
                 raise ValueError("Source changed during conversion; refusing an inconsistent export")
+        logger.info("All checks passed; publishing XTac output to %s", output)
         staging.rename(output)
+    logger.info("LeRobot -> XTac completed: %d episodes, %.2f GiB, elapsed %.1fs, output=%s",
+                len(selected), sum(path.stat().st_size for path in output.glob("*.mcap")) / 1024**3,
+                monotonic() - started, output)
     return True

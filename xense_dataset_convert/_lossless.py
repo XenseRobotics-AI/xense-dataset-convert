@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import tempfile
+from time import monotonic
 from types import SimpleNamespace
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Sequence
+
+from ._progress import Progress
+
+logger = logging.getLogger(__name__)
 
 ATTACHMENT_PREFIX = "xense/lerobot/"
 MANIFEST_ATTACHMENT = ATTACHMENT_PREFIX + "manifest.json"
@@ -36,11 +42,16 @@ def projection_digest(path: Path) -> str:
     from mcap.reader import make_reader
 
     with path.open("rb") as stream:
+        progress = Progress(logger, f"Verifying XTac messages: {path.name}", unit="messages")
         reader = make_reader(stream)
         hasher = hashlib.sha256()
         metadata = [(item.name, item.metadata) for item in reader.iter_metadata()]
+        count = 0
         for schema, channel, message in reader.iter_messages(log_time_order=False):
             update_message_hash(hasher, schema, channel, message)
+            count += 1
+            progress.update(count)
+        progress.update(count, done=True)
         return _combine_hashes(metadata, hasher.hexdigest())
 
 
@@ -106,6 +117,7 @@ def safe_path(name: str) -> Path:
 def inventory(root: Path, exclude: str | None = None) -> dict[str, Any]:
     """Hash files without loading videos into memory; record empty directories too."""
     files, directories = [], []
+    progress = Progress(logger, f"SHA-256 file inventory: {root}", unit="files")
     for path in sorted(root.rglob("*")):
         name = path.relative_to(root).as_posix()
         if exclude and (name == exclude or name.startswith(exclude + "/")):
@@ -116,9 +128,12 @@ def inventory(root: Path, exclude: str | None = None) -> dict[str, Any]:
         if path.is_dir():
             directories.append(name)
         elif path.is_file():
+            logger.debug("Hashing %s", path)
             files.append({"path": name, "size": path.stat().st_size, "sha256": digest(path)})
+            progress.update(len(files))
         else:
             raise ValueError(f"Unsupported source file: {path}")
+    progress.update(len(files), done=True)
     return {"files": files, "directories": directories}
 
 
@@ -148,6 +163,9 @@ def add_source_attachments(writer: Any, root: Path, manifest: dict, episode: int
     add(MANIFEST_ATTACHMENT, json.dumps({"manifest": manifest, "episode": episode,
                                         "projection_sha256": writer.projection_digest()}).encode(),
         "application/json")
+    total = sum(1 for entry in manifest["files"] for part in entry["parts"] if part["episode"] == episode)
+    progress = Progress(logger, f"Episode {episode}: preserving source attachments", total, "blocks")
+    written = 0
     for entry in manifest["files"]:
         with (root / safe_path(entry["path"])).open("rb") as stream:
             for part in entry["parts"]:
@@ -158,6 +176,9 @@ def add_source_attachments(writer: Any, root: Path, manifest: dict, episode: int
                 if len(data) != part["size"]:
                     raise ValueError(f"Source changed during conversion: {entry['path']}")
                 add(part["name"], data, "application/octet-stream")
+                written += 1
+                progress.update(written)
+    progress.update(written, done=True)
 
 
 def attachments(path: Path) -> Iterator[Any]:
@@ -168,6 +189,7 @@ def attachments(path: Path) -> Iterator[Any]:
 
 
 def source_manifest(path: Path) -> dict | None:
+    logger.info("Inspecting source manifest: %s", path.name)
     for attachment in attachments(path):
         if attachment.name == MANIFEST_ATTACHMENT:
             return json.loads(attachment.data)
@@ -176,6 +198,8 @@ def source_manifest(path: Path) -> dict | None:
 
 def restore_lerobot(inputs: Sequence[Path], output: Path) -> bool:
     """Restore a complete, verified export atomically, or return False for raw MCAP."""
+    started = monotonic()
+    logger.info("Checking preserved LeRobot source in %d MCAP files", len(inputs))
     records = [source_manifest(path) for path in inputs]
     if not any(record is not None for record in records):
         return False
@@ -188,7 +212,10 @@ def restore_lerobot(inputs: Sequence[Path], output: Path) -> bool:
         raise ValueError("MCAP files belong to different source snapshots")
     if sorted(record["episode"] for record in records) != sorted(manifest["episodes"]):
         raise ValueError("Incomplete lossless export: provide all exported episodes, or disable source preservation")
-    for path, record in zip(inputs, records):
+    logger.info("Restoring preserved LeRobot files: %d episodes, %d files, %.2f MiB; output=%s",
+                len(inputs), len(manifest["files"]), sum(entry["size"] for entry in manifest["files"]) / 1024**2, output)
+    for index, (path, record) in enumerate(zip(inputs, records), 1):
+        logger.info("Episode %d/%d: checking XTac projection integrity", index, len(inputs))
         if projection_digest(path) != record["projection_sha256"]:
             raise ValueError(f"XTac projection checksum mismatch: {path}")
     if output.exists():
@@ -218,7 +245,9 @@ def restore_lerobot(inputs: Sequence[Path], output: Path) -> bool:
         for directory in manifest["directories"]:
             (root / safe_path(directory)).mkdir(parents=True, exist_ok=True)
         seen: set[str] = set()
-        for source, record in zip(inputs, records):
+        progress = Progress(logger, "Restoring source attachments", len(destinations), "blocks")
+        for index, (source, record) in enumerate(zip(inputs, records), 1):
+            logger.info("Episode %d/%d: extracting source attachments from %s", index, len(inputs), source.name)
             for attachment in attachments(source):
                 if attachment.name not in destinations:
                     continue
@@ -229,12 +258,20 @@ def restore_lerobot(inputs: Sequence[Path], output: Path) -> bool:
                 with path.open("r+b") as stream:
                     stream.seek(part["offset"])
                     stream.write(attachment.data)
+                progress.update(len(seen))
         if seen != set(destinations):
             raise ValueError("Missing source attachments in lossless export")
-        for entry in manifest["files"]:
+        progress.update(len(seen), done=True)
+        progress = Progress(logger, "Verifying restored source SHA-256", len(manifest["files"]), "files")
+        for index, entry in enumerate(manifest["files"], 1):
             if digest(root / safe_path(entry["path"])) != entry["sha256"]:
                 raise ValueError(f"Source checksum mismatch: {entry['path']}")
+            progress.update(index)
+        progress.update(len(manifest["files"]), done=True)
+        logger.info("All checks passed; publishing restored LeRobot dataset to %s", output)
         root.rename(output)
+    logger.info("LeRobot source restoration completed: %d episodes, %d files, elapsed %.1fs, output=%s",
+                len(inputs), len(manifest["files"]), monotonic() - started, output)
     return True
 
 
@@ -244,17 +281,24 @@ def preserve_mcap(inputs: Sequence[Path], root: Path) -> None:
     target.mkdir(parents=True, exist_ok=False)
     files = []
     common = Path(os.path.commonpath([source.resolve().parent for source in inputs]))
+    progress = Progress(logger, "Preserving original MCAP files", len(inputs), "files")
     for index, source in enumerate(inputs):
+        logger.info("Preserving MCAP %d/%d: %s (%.2f MiB)", index + 1, len(inputs), source.name,
+                    source.stat().st_size / 1024**2)
         name = f"{index:06d}/{source.name}"
         destination = target / safe_path(name)
         destination.parent.mkdir()
         shutil.copyfile(source, destination)
         files.append({"path": name, "name": source.resolve().relative_to(common).as_posix(), "sha256": digest(destination)})
+        progress.update(index + 1)
+    progress.update(len(inputs), done=True)
     record = {"version": 1, "files": files, "projection": inventory(root, SOURCE_DIRECTORY)}
     (target / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
+    logger.info("Original MCAP files and projection checksums saved to %s", target)
 
 
 def restore_mcap(root: Path, output: Path) -> bool:
+    started = monotonic()
     target = root / SOURCE_DIRECTORY
     manifest_path = target / "manifest.json"
     if not manifest_path.exists():
@@ -262,12 +306,14 @@ def restore_mcap(root: Path, output: Path) -> bool:
     record = json.loads(manifest_path.read_text())
     if record.get("version") != 1:
         raise ValueError("Unsupported preserved MCAP manifest version")
+    logger.info("Restoring %d original MCAP files; checking LeRobot projection first", len(record["files"]))
     if inventory(root, SOURCE_DIRECTORY) != record["projection"]:
         raise ValueError("LeRobot projection changed; disable source preservation to export edited data")
     names = [entry["name"] for entry in record["files"]]
     if len(names) != len(set(names)):
         raise ValueError("Duplicate original MCAP paths")
-    for entry in record["files"]:
+    for index, entry in enumerate(record["files"], 1):
+        logger.info("Verifying original MCAP SHA-256 %d/%d: %s", index, len(record["files"]), entry["name"])
         safe_path(entry["name"])
         source = target / safe_path(entry["path"])
         if source.is_symlink() or digest(source) != entry["sha256"]:
@@ -278,9 +324,12 @@ def restore_mcap(root: Path, output: Path) -> bool:
     with tempfile.TemporaryDirectory(prefix=".xense-restore-", dir=output.parent) as staging:
         destination = Path(staging) / "mcap"
         destination.mkdir()
-        for entry in record["files"]:
+        for index, entry in enumerate(record["files"], 1):
+            logger.info("Restoring original MCAP %d/%d: %s", index, len(record["files"]), entry["name"])
             path = destination / entry["name"]
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(target / entry["path"], path)
         destination.rename(output)
+    logger.info("Original MCAP restoration completed: %d files, elapsed %.1fs, output=%s",
+                len(record["files"]), monotonic() - started, output)
     return True

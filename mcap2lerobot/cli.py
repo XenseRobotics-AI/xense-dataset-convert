@@ -79,10 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="[%(levelname)s] %(message)s",
-    )
+    from xense_dataset_convert._progress import configure_cli_logging
+
+    configure_cli_logging(args.verbose)
     output = Path(args.output).expanduser().resolve()
     config = ConverterConfig(
         dialect=args.dialect,

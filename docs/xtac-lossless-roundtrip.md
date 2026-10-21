@@ -109,6 +109,33 @@ mcap2lerobot /datasets/legacy-cdr -o /datasets/legacy-restored \
 
 ## 验证入口
 
+### 终端进度日志
+
+两个 CLI 的 Python 日志统一使用本地时间戳：
+`[HH:MM:SS] [模块名] [级别] 消息`。正常运行默认显示 INFO，
+`mcap2lerobot -v` 另外显示 DEBUG 详情；Python 库调用不会改写应用自己的日志配置。
+
+默认输出包含输入/输出路径、方言、源保留模式、逐集编号和总集数。
+长循环约每 10 秒更新一次已处理数量、可知的百分比、耗时和吞吐，
+已知总量时给出该阶段 ETA；阶段开始和结束始终输出。示例：
+
+```text
+[12:49:05] [xense_dataset_convert._xtac_export] [INFO] Episode 1/10: exporting episode 0
+[12:49:15] [xense_dataset_convert._xtac_export] [INFO] Episode 1/10: encoding/writing video: 5,804/11,608 camera frames (50.0%), elapsed 10.0s, 580.4 camera frames/s, ETA 10.0s
+```
+
+`camera frames` 表示各相机帧数之和：1,451 个训练帧、8 路相机对应 11,608 个
+相机帧。ETA 仅估算当前阶段，不包含后续编码、附件写入或校验耗时。
+消息计数型校验和文件清单扫描可能不知道总量，此时只显示计数与耗时。
+更新在循环完成一个处理单元后触发；单次磁盘读取、编码或 `finalize()` 阻塞时
+不会虚报进度，开始日志会注明当前操作。
+
+完整源恢复会明确显示消息完整性校验、源附件提取、恢复文件 SHA-256 校验及最终发布，
+结束时给出恢复集数、文件数、总耗时和输出目录。普通原始 MCAP 转换还会显示
+视频解码/写帧、视频编码保存、`finalize()`、元数据和原 MCAP 保留阶段。
+
+### 回归命令
+
 ```bash
 pytest -q tests/test_xtac_roundtrip.py
 pytest -q

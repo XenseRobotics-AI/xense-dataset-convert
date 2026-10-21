@@ -10,9 +10,12 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable, Protocol, Sequence
 
 import numpy as np
+
+from xense_dataset_convert._progress import Progress
 
 from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, DIALECT_XTAC, ConverterConfig
 from .reader import EpisodeData, McapEpisodeReader, TimedArray
@@ -365,11 +368,15 @@ class McapToLeRobotConverter:
         return LeRobotDataset.create(**kwargs)
 
     def convert(self) -> Path:
+        started = monotonic()
+        logger.info("MCAP -> LeRobot: discovering input files (dialect=%s, preserve_source=%s)",
+                    self.config.dialect, self.config.preserve_source)
         mcap_files = discover_mcap_files(self.inputs)
         if not mcap_files:
             raise ValueError("No .mcap files found")
         if self.output_root.exists():
             raise FileExistsError(f"Output path already exists: {self.output_root}")
+        logger.info("Found %d episodes; output=%s", len(mcap_files), self.output_root)
 
         if self._native_io and self.config.dialect == DIALECT_XTAC and self.config.preserve_source:
             from xense_dataset_convert._lossless import restore_lerobot, source_manifest
@@ -380,6 +387,7 @@ class McapToLeRobotConverter:
                 if restore_lerobot(mcap_files, self.output_root):
                     return self.output_root
 
+        logger.info("Episode 1/%d: reading and planning %s", len(mcap_files), mcap_files[0].name)
         first_episode = self.reader.read(mcap_files[0])
         fps = resolve_fps(self.config, first_episode)
         features = build_features(first_episode)
@@ -411,11 +419,14 @@ class McapToLeRobotConverter:
         source_metadata: list[dict[str, Any] | None] = [first_episode.source_metadata]
         try:
             self._write_episode(dataset, first_episode, features, fps, first_plan)
-            for mcap_path in mcap_files[1:]:
+            for number, mcap_path in enumerate(mcap_files[1:], 2):
+                logger.info("Episode %d/%d: reading and planning %s", number, len(mcap_files), mcap_path.name)
                 episode = self.reader.read(mcap_path)
                 self._write_episode(dataset, episode, features, fps)
                 source_metadata.append(episode.source_metadata)
+            logger.info("Finalizing LeRobot dataset: flushing tables, videos and statistics")
             dataset.finalize()
+            logger.info("LeRobot finalize() completed; writing conversion metadata")
         except Exception:
             finalize = getattr(dataset, "finalize", None)
             if callable(finalize):
@@ -431,6 +442,8 @@ class McapToLeRobotConverter:
             from xense_dataset_convert._lossless import preserve_mcap
 
             preserve_mcap(mcap_files, self.output_root)
+        logger.info("MCAP -> LeRobot completed: %d episodes, elapsed %.1fs, output=%s",
+                    len(mcap_files), monotonic() - started, self.output_root)
         return self.output_root
 
     def _restore_custom_metadata(self, episode: EpisodeData) -> None:
@@ -481,6 +494,9 @@ class McapToLeRobotConverter:
             for feature_name in episode.extra_vectors
         }
         total = len(episode.states)
+        started = monotonic()
+        progress = Progress(logger, f"{episode.source.name}: decoding/writing {len(episode.videos)} cameras",
+                            total, "frames")
         frames = self.reader.iter_frames(episode, plan.video_index)
         written = 0
         try:
@@ -501,11 +517,14 @@ class McapToLeRobotConverter:
                 frame.update(images)
                 dataset.add_frame(frame)
                 written += 1
+                progress.update(written)
         finally:
             close = getattr(frames, "close", None)
             if callable(close):
                 close()
         if written != total:
             raise ValueError(f"{episode.source}: assembled {written} of {total} frames")
+        progress.update(written, done=True)
+        logger.info("%s: saving episode and encoding videos", episode.source.name)
         dataset.save_episode()
-        logger.info("Saved episode with %d frames", total)
+        logger.info("Saved episode with %d frames, elapsed %.1fs", total, monotonic() - started)

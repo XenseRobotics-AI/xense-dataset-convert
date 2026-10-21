@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 
 from .xtac import XTAC_VIDEO_TOPICS
+from .xtac_sidecar import compact_collection_devices, compact_taccap_extrinsics
 
 # Video keys in the order taccap-lerobot uses for meta/episodes columns (bi_all_video_keys).
 VIDEO_KEY_ORDER = (
@@ -752,15 +753,12 @@ def pack(inputs: list[Path], output: Path) -> PackResult:
         "features": features,
     })
 
-    # sidecars (§6): entries are the training MCAP's own, episode_index rewritten to this dataset.
-    devices = [sort_keys({**e.devices_entry, "episode_index": i}) for i, e in enumerate(episodes)]
-    legacy = sum(1 for entry in devices if entry.get("legacy", True) is not False)
-    _write_json(output / "meta/xumi_collection_devices.json", {
-        "version": 1, "total_episodes": len(devices), "snapshot_episodes": len(devices) - legacy,
-        "legacy_episodes": legacy, "episodes": devices})
-    _write_json(output / "meta/taccap_extrinsics.json", {
-        "episodes": [sort_keys({**e.extrinsics_entry, "episode_index": i}) for i, e in enumerate(episodes)],
-        "version": 3})
+    # sidecars (§6): the training MCAP's own v1 / v3 entries, episode_index rewritten to this
+    # dataset, then compacted to the v2 / v4 files the Rust builder writes (sidecar_v2.rs).
+    _write_json(output / "meta/xumi_collection_devices.json", sort_keys(compact_collection_devices(
+        [{**e.devices_entry, "episode_index": i} for i, e in enumerate(episodes)])))
+    _write_json(output / "meta/taccap_extrinsics.json", sort_keys(compact_taccap_extrinsics(
+        [{**e.extrinsics_entry, "episode_index": i} for i, e in enumerate(episodes)])))
     return PackResult(output, len(episodes), total_frames, video_keys)
 
 

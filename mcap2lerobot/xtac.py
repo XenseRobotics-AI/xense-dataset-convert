@@ -39,6 +39,7 @@ from .reader import (
     as_vector,
     get_message_field,
 )
+from .xtac_sidecar import compact_collection_devices, compact_taccap_extrinsics
 
 logger = logging.getLogger(__name__)
 
@@ -478,13 +479,11 @@ def _parse_episode_record(record: dict[str, Any] | None) -> dict[str, Any] | Non
 
 def _write_collection_devices(meta: Path, parsed: list[dict[str, Any] | None]) -> None:
     episodes: list[dict[str, Any]] = []
-    legacy_count = 0
     for index, entry in enumerate(parsed):
         devices = (entry or {}).get("collection_devices") or {}
         # An episode is "legacy" when its device metadata was not captured; ours
         # always is, so missing_fields is empty and legacy is False.
         legacy = bool(devices.get("missing_fields"))
-        legacy_count += int(legacy)
         episodes.append(
             {
                 "devices": devices,
@@ -493,16 +492,8 @@ def _write_collection_devices(meta: Path, parsed: list[dict[str, Any] | None]) -
                 "source_episode_id": (entry or {}).get("episode_id"),
             }
         )
-    _dump_json(
-        meta / "xumi_collection_devices.json",
-        {
-            "version": 1,
-            "total_episodes": len(parsed),
-            "snapshot_episodes": len(parsed) - legacy_count,
-            "legacy_episodes": legacy_count,
-            "episodes": episodes,
-        },
-    )
+    # Written deduplicated (v2), like taccap-core >= 43da99f; entries are v1-shaped before compaction.
+    _dump_json(meta / "xumi_collection_devices.json", compact_collection_devices(episodes))
 
 
 def _write_taccap_extrinsics(meta: Path, parsed: list[dict[str, Any] | None]) -> None:
@@ -531,7 +522,7 @@ def _write_taccap_extrinsics(meta: Path, parsed: list[dict[str, Any] | None]) ->
                 "warnings": [],
             }
         )
-    _dump_json(meta / "taccap_extrinsics.json", {"episodes": episodes})
+    _dump_json(meta / "taccap_extrinsics.json", compact_taccap_extrinsics(episodes))   # v4
 
 
 def _inject_rectify_config(meta: Path, parsed: list[dict[str, Any] | None]) -> None:

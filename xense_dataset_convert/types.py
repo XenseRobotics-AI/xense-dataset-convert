@@ -34,6 +34,10 @@ class Format(Enum):
     RLDS = "rlds"
     """A generated RLDS/TFDS dataset, such as DROID."""
 
+    XTAC_TRAIN_MCAP = "xtac_train_mcap"
+    """XTac collector training MCAPs (``*.train.mcap``, ``timing=fixed_rate_grid``), packed into
+    LeRobot exactly as taccap-core's Rust exporter would -- no decoding, no re-encoding."""
+
     def __str__(self) -> str:
         return self.value
 

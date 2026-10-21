@@ -391,6 +391,8 @@ def convert_dataset(
     chunks: list[int] | None = None,
     episodes: list[int] | None = None,
     intra_workers: int = 8,
+    dialect: str = "xtac",
+    preserve_source: bool = True,
 ) -> bool:
     """
     Convert a LeRobot dataset to MCAP format.
@@ -403,6 +405,8 @@ def convert_dataset(
         converter_functions_path: Path to converter_functions.yaml
         episodes: List of episode indices to convert (None = all episodes)
         intra_workers: Per-episode internal parallelism (default: 8)
+        dialect: XTac JSON/protobuf (default) or legacy ``lerobot_roundtrip`` CDR.
+        preserve_source: Preserve checksummed source payloads for complete XTac return conversion.
     Returns:
         True only when every requested episode was converted; False when any
         episode was skipped or the run failed outright (the cause is logged).
@@ -415,11 +419,25 @@ def convert_dataset(
     logger.info(f"  Intra-episode workers: {intra_workers}")
 
     try:
+        if dialect == "xtac":
+            from xense_dataset_convert._xtac_export import export_xtac
+            from .dataset_info import DatasetInfo
+
+            if chunks is not None:
+                raise ValueError("XTac export uses episode selection, not chunk selection")
+            return export_xtac(
+                DatasetInfo(Path(dataset_root) / "meta/info.json"),
+                Path(output_dir), episodes, preserve_source, intra_workers,
+            )
+        if dialect != "lerobot_roundtrip":
+            raise ValueError(f"Unknown MCAP dialect: {dialect!r}")
         # Initialize the converter
         converter = LeRobotConverter(
             dataset_root=dataset_root,
             converter_functions_path=converter_functions_path,
             intra_workers=intra_workers,
+            dialect=dialect,
+            preserve_source=preserve_source,
         )
 
         # Show conversion plan
@@ -460,11 +478,19 @@ def _add_video_encoder_args(p: argparse.ArgumentParser) -> None:
     good size/quality trade-off on robotics video (see tests/bench_encoder.sh).
     """
     p.add_argument(
+        "--dialect", choices=("xtac", "lerobot_roundtrip"), default="xtac",
+        help="MCAP layout (default: xtac). lerobot_roundtrip keeps the legacy CDR exporter.",
+    )
+    p.add_argument(
+        "--preserve-source", action=argparse.BooleanOptionalAction, default=True,
+        help="Preserve checksummed source files for exact restoration (XTac default: enabled)",
+    )
+    p.add_argument(
         "--video-preset",
         choices=_LIBX264_PRESETS,
         default=VIDEO_ENCODER_PRESET,
         help=(
-            f"libx264 preset for the per-frame keyframe encode "
+            f"Legacy lerobot_roundtrip libx264 preset "
             f"(default: {VIDEO_ENCODER_PRESET}). Faster presets produce larger files."
         ),
     )
@@ -473,13 +499,16 @@ def _add_video_encoder_args(p: argparse.ArgumentParser) -> None:
         type=int,
         default=VIDEO_ENCODER_CRF,
         help=(
-            f"libx264 CRF quality (0-51, lower = better, default: {VIDEO_ENCODER_CRF}). "
-            f"Robotics video tolerates 28-32 with no visible loss."
+            f"Legacy lerobot_roundtrip CRF quality (0-51, default: {VIDEO_ENCODER_CRF}). "
+            "XTac always uses lossless RGB H.264."
         ),
     )
 
 
 def main():
+    from xense_dataset_convert._progress import configure_cli_logging
+
+    configure_cli_logging()
     parser = argparse.ArgumentParser(
         prog="lerobot2mcap", description="Convert LeRobot datasets to MCAP format"
     )
@@ -603,7 +632,7 @@ def main():
         mcap_output_dir = (
             Path(args.output_dir).expanduser()
             if args.output_dir
-            else dataset_root / "mcap_conversion"
+            else dataset_root.resolve().with_name(dataset_root.resolve().name + "_mcap")
         )
         converter_functions = Path(args.converter_functions).expanduser()
         chunks = None  # Convert all chunks
@@ -623,6 +652,8 @@ def main():
         chunks,
         episodes,
         intra_workers,
+        dialect=args.dialect,
+        preserve_source=args.preserve_source,
     ):
         return 0
     else:

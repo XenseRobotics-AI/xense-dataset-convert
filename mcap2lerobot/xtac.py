@@ -185,9 +185,11 @@ class XTacMcapReader:
     ):
         self.config = config
         self.video_decoder_factory = video_decoder_factory
+        self._video_topics: dict[str, str] = {}
 
     def video_feature(self, topic: str) -> str | None:
-        return XTAC_VIDEO_TOPICS.get(normalize_topic(topic))
+        topic = normalize_topic(topic)
+        return self._video_topics.get(topic) or XTAC_VIDEO_TOPICS.get(topic)
 
     # -- pass one -------------------------------------------------------------
 
@@ -210,13 +212,22 @@ class XTacMcapReader:
 
         with episode.source.open("rb") as stream:
             reader = make_reader(stream)
+            for record in reader.iter_metadata():
+                if record.name in (TRAIN_METADATA, EPISODE_METADATA, "xense_lerobot"):
+                    metadata_records[record.name] = dict(record.metadata)
+            embedded = metadata_records.get("xense_lerobot", {})
+            if embedded and embedded.get("version") != "1":
+                raise ValueError("Unsupported xense_lerobot metadata version")
+            extra_topics = json.loads(embedded.get("extra_topics", "{}"))
+            self._video_topics = json.loads(embedded.get("video_topics", "{}"))
+            embedded_info = json.loads(embedded.get("info", "{}"))
             decode = _XTacMessageDecoder()
             for schema, channel, message in reader.iter_messages(log_time_order=True):
                 topic = normalize_topic(channel.topic)
                 if topic == state_topic:
                     decoded = decode(schema, channel, message)
                     episode.states.append(
-                        TimedArray(int(message.log_time), _values(decoded), task_index=0)
+                        TimedArray(int(message.log_time), _values(decoded), task_index=int(decoded.get("task_index", 0)))
                     )
                     continue
                 if topic == action_topic:
@@ -233,6 +244,14 @@ class XTacMcapReader:
                         confidence.append(TimedArray(int(message.log_time), vector))
                     continue
 
+                if topic in extra_topics:
+                    feature = extra_topics[topic]
+                    spec = embedded_info["features"][feature]
+                    value = np.asarray(decode(schema, channel, message)["values"], dtype=spec["dtype"])
+                    value = value.reshape(tuple(spec["shape"]))
+                    episode.extra_vectors.setdefault(feature, []).append(TimedArray(int(message.log_time), value))
+                    continue
+
                 feature_name = self.video_feature(channel.topic)
                 if feature_name is None:
                     continue
@@ -247,9 +266,11 @@ class XTacMcapReader:
                         shapes[feature_name] = tuple(int(dim) for dim in frame.shape)  # type: ignore[assignment]
                         break
 
-            for record in reader.iter_metadata():
-                if record.name in (TRAIN_METADATA, EPISODE_METADATA):
-                    metadata_records[record.name] = dict(record.metadata)
+        for feature_name, decoder in priming.items():
+            if feature_name not in shapes:
+                for frame in decoder.flush():
+                    shapes[feature_name] = tuple(int(dim) for dim in frame.shape)
+                    break
 
         for feature_name, log_times in timestamps.items():
             if feature_name not in shapes:
@@ -262,12 +283,19 @@ class XTacMcapReader:
                 format=formats[feature_name],
             )
 
-        if confidence:
+        if confidence and TRACKER_CONFIDENCE_FEATURE not in episode.extra_vectors:
             episode.extra_vectors[TRACKER_CONFIDENCE_FEATURE] = confidence
         if pico_channel:
             metadata_records["pico_channel"] = pico_channel
         episode.source_metadata = metadata_records
         self._synthesize_metadata(episode, metadata_records)
+        if embedded_info:
+            episode.info = embedded_info
+            episode.episode_meta = json.loads(embedded["episode"])
+            for feature, samples in [("observation.state", episode.states), ("action", episode.actions)]:
+                spec = embedded_info["features"][feature]
+                for index, sample in enumerate(samples):
+                    samples[index] = TimedArray(sample.timestamp_ns, sample.value.astype(spec["dtype"]), sample.task_index)
         self._validate(episode)
         return episode
 
@@ -302,7 +330,7 @@ class XTacMcapReader:
                 len(TRACKER_CONFIDENCE_NAMES), TRACKER_CONFIDENCE_NAMES
             )
 
-        fps = _int_or_none(train.get("fps"))
+        fps = _int_or_none(train.get("fps") or train.get("nominal_encoder_fps"))
         for feature_name, index in episode.videos.items():
             features[feature_name] = {
                 "dtype": "video",
@@ -338,6 +366,8 @@ class XTacMcapReader:
         needed. Frames are matched to packets by production order (see
         :class:`SequentialVideoDecoder`) and pruned once past.
         """
+        embedded = (episode.source_metadata or {}).get("xense_lerobot", {})
+        self._video_topics = json.loads(embedded.get("video_topics", "{}"))
         total = len(episode.states)
         features = list(episode.videos)
         if not features:

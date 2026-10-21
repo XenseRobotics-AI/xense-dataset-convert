@@ -13,6 +13,7 @@ from ._support import lerobot_totals
 CONFIG_OPTIONS = frozenset(
     {
         "dialect",
+        "preserve_source",
         "state_topic",
         "action_topic",
         "state_field",

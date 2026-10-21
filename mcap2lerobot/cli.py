@@ -26,6 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", required=True, help="New dataset directory")
     parser.add_argument("--repo-id", default=None, help="LeRobot repository ID")
     parser.add_argument(
+        "--preserve-source", action=argparse.BooleanOptionalAction, default=True,
+        help="Restore embedded source files or preserve original MCAPs for exact return conversion",
+    )
+    parser.add_argument(
         "--dialect",
         choices=DIALECTS,
         default=DIALECT_XTAC,
@@ -75,13 +79,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="[%(levelname)s] %(message)s",
-    )
+    from xense_dataset_convert._progress import configure_cli_logging
+
+    configure_cli_logging(args.verbose)
     output = Path(args.output).expanduser().resolve()
     config = ConverterConfig(
         dialect=args.dialect,
+        preserve_source=args.preserve_source,
         state_topic=args.state_topic,
         action_topic=args.action_topic,
         state_field=args.state_field,

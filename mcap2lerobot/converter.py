@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import copy
 import inspect
+import json
 import logging
 import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable, Protocol, Sequence
 
 import numpy as np
+
+from xense_dataset_convert._progress import Progress
 
 from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, DIALECT_XTAC, ConverterConfig
 from .reader import EpisodeData, McapEpisodeReader, TimedArray
@@ -330,6 +334,7 @@ class McapToLeRobotConverter:
         self.output_root = Path(output_root).expanduser().resolve()
         self.repo_id = repo_id
         self.config = config or ConverterConfig()
+        self._native_io = reader is None and dataset_factory is None
         self.reader = reader or self._default_reader(self.config)
         self.dataset_factory = dataset_factory or self._default_dataset_factory
 
@@ -342,7 +347,7 @@ class McapToLeRobotConverter:
         return McapEpisodeReader(config)
 
     @staticmethod
-    def _default_dataset_factory(video_codec: str | None = None, **kwargs: Any) -> DatasetWriter:
+    def _default_dataset_factory(video_codec: str | None = None, lossless_video: bool = False, **kwargs: Any) -> DatasetWriter:
         try:
             from lerobot.datasets.lerobot_dataset import LeRobotDataset
         except ImportError as error:
@@ -352,16 +357,37 @@ class McapToLeRobotConverter:
         # saved. Hand it a copy so `_write_episode`'s layout check keeps comparing
         # against the layout we built, not against lerobot's annotated one.
         kwargs["features"] = copy.deepcopy(kwargs["features"])
-        kwargs.update(encoder_kwargs(LeRobotDataset, video_codec))
+        if lossless_video and kwargs.get("use_videos"):
+            from .lossless_video import rgb_encoder
+
+            if "rgb_encoder" not in inspect.signature(LeRobotDataset.create).parameters:
+                raise RuntimeError("Lossless XTac video writing requires lerobot>=0.6.1")
+            kwargs["rgb_encoder"] = rgb_encoder()
+        else:
+            kwargs.update(encoder_kwargs(LeRobotDataset, video_codec))
         return LeRobotDataset.create(**kwargs)
 
     def convert(self) -> Path:
+        started = monotonic()
+        logger.info("MCAP -> LeRobot: discovering input files (dialect=%s, preserve_source=%s)",
+                    self.config.dialect, self.config.preserve_source)
         mcap_files = discover_mcap_files(self.inputs)
         if not mcap_files:
             raise ValueError("No .mcap files found")
         if self.output_root.exists():
             raise FileExistsError(f"Output path already exists: {self.output_root}")
+        logger.info("Found %d episodes; output=%s", len(mcap_files), self.output_root)
 
+        if self._native_io and self.config.dialect == DIALECT_XTAC and self.config.preserve_source:
+            from xense_dataset_convert._lossless import restore_lerobot, source_manifest
+
+            if any(source_manifest(path) is not None for path in mcap_files):
+                if any(value is not None for value in (self.config.fps, self.config.task, self.config.robot_type)):
+                    raise ValueError("Source restoration cannot apply overrides; use --no-preserve-source to transform data")
+                if restore_lerobot(mcap_files, self.output_root):
+                    return self.output_root
+
+        logger.info("Episode 1/%d: reading and planning %s", len(mcap_files), mcap_files[0].name)
         first_episode = self.reader.read(mcap_files[0])
         fps = resolve_fps(self.config, first_episode)
         features = build_features(first_episode)
@@ -387,16 +413,20 @@ class McapToLeRobotConverter:
             features=features,
             use_videos=bool(first_episode.videos),
             video_codec=video_codec,
+            **({"lossless_video": True} if self._native_io and self.config.dialect == DIALECT_XTAC else {}),
         )
 
         source_metadata: list[dict[str, Any] | None] = [first_episode.source_metadata]
         try:
             self._write_episode(dataset, first_episode, features, fps, first_plan)
-            for mcap_path in mcap_files[1:]:
+            for number, mcap_path in enumerate(mcap_files[1:], 2):
+                logger.info("Episode %d/%d: reading and planning %s", number, len(mcap_files), mcap_path.name)
                 episode = self.reader.read(mcap_path)
                 self._write_episode(dataset, episode, features, fps)
                 source_metadata.append(episode.source_metadata)
+            logger.info("Finalizing LeRobot dataset: flushing tables, videos and statistics")
             dataset.finalize()
+            logger.info("LeRobot finalize() completed; writing conversion metadata")
         except Exception:
             finalize = getattr(dataset, "finalize", None)
             if callable(finalize):
@@ -406,7 +436,31 @@ class McapToLeRobotConverter:
                     pass
             raise
         self._write_dialect_metadata(source_metadata, robot_type)
+        if self._native_io and self.config.dialect == DIALECT_XTAC:
+            self._restore_custom_metadata(first_episode)
+        if self._native_io and self.config.dialect == DIALECT_XTAC and self.config.preserve_source:
+            from xense_dataset_convert._lossless import preserve_mcap
+
+            preserve_mcap(mcap_files, self.output_root)
+        logger.info("MCAP -> LeRobot completed: %d episodes, elapsed %.1fs, output=%s",
+                    len(mcap_files), monotonic() - started, self.output_root)
         return self.output_root
+
+    def _restore_custom_metadata(self, episode: EpisodeData) -> None:
+        """Carry calibration hints without overwriting newly generated video info."""
+        source = episode.info or {}
+        path = self.output_root / "meta/info.json"
+        info = json.loads(path.read_text())
+        if "collection_stack" in source:
+            info["collection_stack"] = source["collection_stack"]
+        for key, spec in source.get("features", {}).items():
+            if key not in info["features"]:
+                continue
+            custom = {name: value for name, value in (spec.get("info") or {}).items()
+                      if not name.startswith("video.")}
+            if custom:
+                info["features"][key].setdefault("info", {}).update(custom)
+        path.write_text(json.dumps(info, indent=2, ensure_ascii=False) + "\n")
 
     def _write_dialect_metadata(
         self, source_metadata: list[dict[str, Any] | None], robot_type: str
@@ -440,6 +494,9 @@ class McapToLeRobotConverter:
             for feature_name in episode.extra_vectors
         }
         total = len(episode.states)
+        started = monotonic()
+        progress = Progress(logger, f"{episode.source.name}: decoding/writing {len(episode.videos)} cameras",
+                            total, "frames")
         frames = self.reader.iter_frames(episode, plan.video_index)
         written = 0
         try:
@@ -460,11 +517,14 @@ class McapToLeRobotConverter:
                 frame.update(images)
                 dataset.add_frame(frame)
                 written += 1
+                progress.update(written)
         finally:
             close = getattr(frames, "close", None)
             if callable(close):
                 close()
         if written != total:
             raise ValueError(f"{episode.source}: assembled {written} of {total} frames")
+        progress.update(written, done=True)
+        logger.info("%s: saving episode and encoding videos", episode.source.name)
         dataset.save_episode()
-        logger.info("Saved episode with %d frames", total)
+        logger.info("Saved episode with %d frames, elapsed %.1fs", total, monotonic() - started)

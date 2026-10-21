@@ -9,7 +9,7 @@ from ..types import ConversionError, ConvertResult, Format
 from ._support import single_input
 
 ACCEPTED_OPTIONS = frozenset(
-    {"converter_functions_path", "chunks", "episodes", "intra_workers"}
+    {"converter_functions_path", "chunks", "episodes", "intra_workers", "dialect", "preserve_source"}
 )
 
 # Not accepted: video_preset / video_crf. lerobot2mcap reads those from the
@@ -35,6 +35,7 @@ def convert(inputs: list[Path], output: Path, options: dict[str, Any]) -> Conver
         chunks=options.get("chunks"),
         episodes=options.get("episodes"),
         **({"intra_workers": options["intra_workers"]} if "intra_workers" in options else {}),
+        **({key: options[key] for key in ("dialect", "preserve_source") if key in options}),
     )
     # convert_dataset catches its own exceptions and reports failure as False;
     # the facade contract is to raise, so the cause is in the log it wrote.

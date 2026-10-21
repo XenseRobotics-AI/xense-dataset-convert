@@ -90,7 +90,7 @@ def test_reference_camera_timestamps_is_refused():
 
 
 def _write_train_mcap(path: Path, *, timing="fixed_rate_grid", started_ms=1792602557684, episode_id="EP-1",
-                      task_name="t", rows=3, omit=()):
+                      task_name="t", rows=3, omit=(), tcp=None):
     from mcap.writer import Writer
 
     names = [f"d{i}" for i in range(2)]
@@ -107,6 +107,8 @@ def _write_train_mcap(path: Path, *, timing="fixed_rate_grid", started_ms=179260
                                    data=json.dumps({"grid_index": i, "values": [float(i), 0.5]}).encode())
         train = {"timing": timing, "fps": "30", "rows": str(rows), "state_dim": "2",
                  "dimension_names": ",".join(names), "robot_type": "xtac_umi_g1"}
+        if tcp is not None:
+            train["tcp_frame_convention"] = tcp
         writer.add_metadata("xense_train_mcap", train)
         writer.add_metadata("episode", {"episode_id": episode_id, "started_at_ms": str(started_ms),
                                         "capture_mode": "dual_claw_head", "task_name": task_name, "prompt": "p"})
@@ -188,3 +190,21 @@ def test_mux_layout_is_ftyp_mdat_moov(tmp_path):
         kinds.append(kind)
         offset += size
     assert kinds == [b"ftyp", b"mdat", b"moov"]
+
+
+@pytest.mark.parametrize("tcp", [None, "mirrored-v1"])
+def test_tcp_frame_convention_is_passed_through_after_collection_stack(tmp_path, tcp):
+    X.pack([_write_train_mcap(tmp_path / "a.train.mcap", tcp=tcp)], tmp_path / "out")
+    keys = list(json.loads((tmp_path / "out/meta/info.json").read_text()))
+    if tcp is None:
+        assert "tcp_frame_convention" not in keys                    # pre-556dd3d MCAPs: no claim made
+    else:
+        assert keys[keys.index("collection_stack") + 1] == "tcp_frame_convention"
+        assert json.loads((tmp_path / "out/meta/info.json").read_text())["tcp_frame_convention"] == tcp
+
+
+def test_inputs_with_different_tcp_conventions_are_refused(tmp_path):
+    a = X.read_train_mcap(_write_train_mcap(tmp_path / "a.train.mcap", episode_id="EP-A", tcp="mirrored-v1"))
+    b = X.read_train_mcap(_write_train_mcap(tmp_path / "b.train.mcap", episode_id="EP-B", started_ms=1792602600000))
+    with pytest.raises(X.TrainMcapError, match="tcp_frame_convention"):
+        X.order_episodes([a, b])

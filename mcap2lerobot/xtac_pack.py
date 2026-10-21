@@ -96,6 +96,7 @@ class TrainEpisode:
     video_stats: dict[str, dict[str, Any]]  # by h264 topic
     devices_entry: dict[str, Any]
     extrinsics_entry: dict[str, Any]
+    tcp_frame_convention: str | None = None   # core >= 556dd3d declares "mirrored-v1"; older MCAPs omit it
 
     @property
     def group(self) -> str:
@@ -191,6 +192,7 @@ def read_train_mcap(path: Path) -> TrainEpisode:
         started_at_ms=int(episode.get("started_at_ms") or 0), capture_mode=episode.get("capture_mode", ""),
         task_name=episode.get("task_name", ""), prompt=episode.get("prompt", ""),
         robot_type=train["robot_type"], names=names, rows=count,
+        tcp_frame_convention=train.get("tcp_frame_convention"),
         state=np.asarray(rows["/train/state"], dtype=np.float32).reshape(count, len(names)),
         action=np.asarray(rows["/train/action"], dtype=np.float32).reshape(count, len(names)),
         confidence=np.asarray(rows["/train/tracker_confidence"], dtype=np.float32).reshape(count, 2),
@@ -210,7 +212,8 @@ def order_episodes(episodes: list[TrainEpisode]) -> list[TrainEpisode]:
     if len(groups) > 1:
         raise TrainMcapError(f"inputs span {len(groups)} datasets {groups}; the collector would export "
                              "one dataset per {prefix}-{task}-{Beijing YYMMDD} -- pack each group separately")
-    for attribute in ("prompt", "robot_type", "names"):
+    # mixing TCP conventions in one dataset flips half the left-hand poses without any visible sign
+    for attribute in ("prompt", "robot_type", "names", "tcp_frame_convention"):
         values = {json.dumps(getattr(e, attribute)) for e in ordered}
         if len(values) > 1:
             raise TrainMcapError(f"inputs disagree on {attribute}: {sorted(values)}")
@@ -744,6 +747,8 @@ def pack(inputs: list[Path], output: Path) -> PackResult:
         features[name] = {"dtype": "int64", "shape": [1], "names": None}
     _write_json(output / "meta/info.json", {
         "codebase_version": "v3.0", "robot_type": first.robot_type, "collection_stack": COLLECTION_STACK,
+        # passed through as declared, never converted here (the MCAP's poses already follow it)
+        **({"tcp_frame_convention": first.tcp_frame_convention} if first.tcp_frame_convention else {}),
         "total_episodes": len(episodes), "total_frames": total_frames, "total_tasks": 1,
         "chunks_size": CHUNKS_SIZE, "data_files_size_in_mb": DATA_FILES_SIZE_IN_MB,
         "video_files_size_in_mb": VIDEO_FILES_SIZE_IN_MB, "fps": FPS,

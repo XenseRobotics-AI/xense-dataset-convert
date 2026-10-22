@@ -768,7 +768,13 @@ def pack(inputs: list[Path], output: Path) -> PackResult:
 
 
 def _rectify(episodes: list[TrainEpisode], key: str) -> tuple[str, Any] | None:
-    """First episode carrying a recipe wins (lib.rs). Calibration beats channel metadata."""
+    """First episode carrying a recipe wins (lib.rs). Calibration beats channel metadata.
+
+    Tactile grid recipes are no longer recorded (core 9c476e0); older MCAPs still carry them, so
+    tactile streams are skipped here rather than relying on the input. Wrist / head pass through.
+    """
+    if "_tactile_" in key:
+        return None
     topic = next(t for t, k in TOPIC_TO_KEY.items() if k == key)
     for e in episodes:
         calibration = e.calibration.get(topic)

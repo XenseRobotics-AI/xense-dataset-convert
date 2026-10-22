@@ -145,9 +145,9 @@ XTac 与往返格式的关键区别，以及对应的处理：
   放进 `EpisodeData.extra_vectors`，由 `plan_pairing` 用与 action 相同的最近邻规则配到每个 state。
   `extra_vectors` 是通用机制，往返格式为空。
 - **额外 meta 文件**：`convert()` 在 `finalize()` 之后调用 `write_xtac_metadata`，从各集的 `episode`
-  记录复原 `hardware.json`、`xumi_collection_devices.json`、`taccap_extrinsics.json`，并把 tactile 相机的
-  `taccap.rectify_config` 合并进 `meta/info.json`。`tracker_to_ee` 留空——落盘位姿已是 EE/TCP。
+  记录复原 `hardware.json`、`xumi_collection_devices.json`、`taccap_extrinsics.json`（devices v2 / extrinsics v4，去重写盘）。
+  触觉网格矫正配方 `taccap.rectify_*` 不再写进 `meta/info.json`（core 9c476e0）。`tracker_to_ee` 留空——落盘位姿已是 EE/TCP。
 
 参考数据集 `xtac-umi-g1-block-to-box` 属于另一批采集（`source_episode_id` 为 `EP-1788*`、序列号不同），
 只作**结构模板**；本转换器产出的设备序列号来自各自的 mcap。已核对：feature 的 dtype/shape/names、
-data parquet 列、五个 meta json 文件集合、以及三个 provenance 文件与 `rectify_config` 的键结构均与参考一致。
+data parquet 列、五个 meta json 文件集合、以及三个 provenance 文件的键结构均与参考一致。

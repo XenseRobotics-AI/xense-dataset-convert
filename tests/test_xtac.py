@@ -269,8 +269,7 @@ def test_write_xtac_metadata_produces_the_provenance_files(tmp_path):
 
     info = json.loads((meta / "info.json").read_text())
     tactile_info = info["features"][TACTILE]["info"]
-    assert tactile_info["taccap.rectify_kind"] == "tactile"
-    assert tactile_info["taccap.rectify_config"]["base_grid"] == [1, 2, 3, 4]
+    assert not [k for k in tactile_info if k.startswith("taccap.")]   # tactile recipe no longer written
     assert tactile_info["video.codec"] == "h264"  # left intact
 
 

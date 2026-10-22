@@ -97,6 +97,7 @@ class TrainEpisode:
     devices_entry: dict[str, Any]
     extrinsics_entry: dict[str, Any]
     tcp_frame_convention: str | None = None   # core >= 556dd3d declares "mirrored-v1"; older MCAPs omit it
+    headset_mount: str | None = None          # core >= 35e46e8: "head" / "neck"; older MCAPs omit it
 
     @property
     def group(self) -> str:
@@ -193,6 +194,7 @@ def read_train_mcap(path: Path) -> TrainEpisode:
         task_name=episode.get("task_name", ""), prompt=episode.get("prompt", ""),
         robot_type=train["robot_type"], names=names, rows=count,
         tcp_frame_convention=train.get("tcp_frame_convention"),
+        headset_mount=train.get("headset_mount"),
         state=np.asarray(rows["/train/state"], dtype=np.float32).reshape(count, len(names)),
         action=np.asarray(rows["/train/action"], dtype=np.float32).reshape(count, len(names)),
         confidence=np.asarray(rows["/train/tracker_confidence"], dtype=np.float32).reshape(count, 2),
@@ -213,7 +215,8 @@ def order_episodes(episodes: list[TrainEpisode]) -> list[TrainEpisode]:
         raise TrainMcapError(f"inputs span {len(groups)} datasets {groups}; the collector would export "
                              "one dataset per {prefix}-{task}-{Beijing YYMMDD} -- pack each group separately")
     # mixing TCP conventions in one dataset flips half the left-hand poses without any visible sign
-    for attribute in ("prompt", "robot_type", "names", "tcp_frame_convention"):
+    # same for the headset mount: head.* and the TCP origin mean the head in one, the chest in the other
+    for attribute in ("prompt", "robot_type", "names", "tcp_frame_convention", "headset_mount"):
         values = {json.dumps(getattr(e, attribute)) for e in ordered}
         if len(values) > 1:
             raise TrainMcapError(f"inputs disagree on {attribute}: {sorted(values)}")
@@ -749,6 +752,7 @@ def pack(inputs: list[Path], output: Path) -> PackResult:
         "codebase_version": "v3.0", "robot_type": first.robot_type, "collection_stack": COLLECTION_STACK,
         # passed through as declared, never converted here (the MCAP's poses already follow it)
         **({"tcp_frame_convention": first.tcp_frame_convention} if first.tcp_frame_convention else {}),
+        **({"headset_mount": first.headset_mount} if first.headset_mount else {}),
         "total_episodes": len(episodes), "total_frames": total_frames, "total_tasks": 1,
         "chunks_size": CHUNKS_SIZE, "data_files_size_in_mb": DATA_FILES_SIZE_IN_MB,
         "video_files_size_in_mb": VIDEO_FILES_SIZE_IN_MB, "fps": FPS,

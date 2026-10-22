@@ -12,6 +12,7 @@ from ._support import lerobot_totals
 ACCEPTED_OPTIONS = frozenset({
     "config", "split", "fps", "robot_type", "task", "state_fields",
     "action_field", "image_fields", "max_episodes", "overwrite", "vcodec", "show_progress",
+    "image_writer_threads", "encoder_threads",
 })
 
 
@@ -25,7 +26,7 @@ def convert(inputs: list[Path], output: Path, options: dict[str, Any]) -> Conver
     config = ConverterConfig.from_yaml(config_path) if config_path else ConverterConfig()
     overrides = {name: options[name] for name in (
         "fps", "robot_type", "task", "state_fields", "action_field", "image_fields",
-        "max_episodes", "vcodec", "show_progress",
+        "max_episodes", "vcodec", "show_progress", "image_writer_threads", "encoder_threads",
     ) if name in options}
     for key in ("state_fields", "image_fields"):
         if key in overrides:

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
 import numpy as np
+from xense_dataset_convert._lerobot_writer import writer_parallelism_kwargs
 
 from .config import DEFAULT_ROBOT_TYPE, DEFAULT_TASK, DIALECT_XTAC, ConverterConfig
 from .reader import EpisodeData, McapEpisodeReader, TimedArray
@@ -331,7 +332,7 @@ class McapToLeRobotConverter:
         self.repo_id = repo_id
         self.config = config or ConverterConfig()
         self.reader = reader or self._default_reader(self.config)
-        self.dataset_factory = dataset_factory or self._default_dataset_factory
+        self.dataset_factory = dataset_factory
 
     @staticmethod
     def _default_reader(config: ConverterConfig) -> Any:
@@ -342,7 +343,12 @@ class McapToLeRobotConverter:
         return McapEpisodeReader(config)
 
     @staticmethod
-    def _default_dataset_factory(video_codec: str | None = None, **kwargs: Any) -> DatasetWriter:
+    def _default_dataset_factory(
+        video_codec: str | None = None,
+        image_writer_threads: int = 0,
+        encoder_threads: int | None = None,
+        **kwargs: Any,
+    ) -> DatasetWriter:
         try:
             from lerobot.datasets.lerobot_dataset import LeRobotDataset
         except ImportError as error:
@@ -353,6 +359,14 @@ class McapToLeRobotConverter:
         # against the layout we built, not against lerobot's annotated one.
         kwargs["features"] = copy.deepcopy(kwargs["features"])
         kwargs.update(encoder_kwargs(LeRobotDataset, video_codec))
+        kwargs.update(
+            writer_parallelism_kwargs(
+                LeRobotDataset,
+                kwargs["features"],
+                image_writer_threads,
+                encoder_threads,
+            )
+        )
         return LeRobotDataset.create(**kwargs)
 
     def convert(self) -> Path:
@@ -379,7 +393,7 @@ class McapToLeRobotConverter:
         logger.info(
             "Creating LeRobot v3 dataset at %s (fps=%d, robot_type=%s)", self.output_root, fps, robot_type
         )
-        dataset = self.dataset_factory(
+        factory_kwargs = dict(
             repo_id=self.repo_id,
             root=self.output_root,
             fps=fps,
@@ -388,6 +402,14 @@ class McapToLeRobotConverter:
             use_videos=bool(first_episode.videos),
             video_codec=video_codec,
         )
+        if self.dataset_factory is None:
+            dataset = self._default_dataset_factory(
+                **factory_kwargs,
+                image_writer_threads=self.config.image_writer_threads,
+                encoder_threads=self.config.encoder_threads,
+            )
+        else:
+            dataset = self.dataset_factory(**factory_kwargs)
 
         source_metadata: list[dict[str, Any] | None] = [first_episode.source_metadata]
         try:

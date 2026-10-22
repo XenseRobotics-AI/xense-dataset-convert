@@ -17,11 +17,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fps", type=int)
     parser.add_argument("--task")
     parser.add_argument("--max-episodes", type=int)
+    parser.add_argument(
+        "--image-writer-threads",
+        type=int,
+        help="Background image staging threads (0 disables; may increase memory use)",
+    )
+    parser.add_argument(
+        "--encoder-threads",
+        type=int,
+        help="Threads per camera video encoder (default: auto budget across cameras)",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no-progress", action="store_true", help="Disable episode/frame progress bars")
     args = parser.parse_args(argv)
     config = ConverterConfig.from_yaml(args.config) if args.config else ConverterConfig()
-    values = {key: value for key, value in {"fps": args.fps, "task": args.task, "max_episodes": args.max_episodes}.items() if value is not None}
+    values = {
+        key: value
+        for key, value in {
+            "fps": args.fps,
+            "task": args.task,
+            "max_episodes": args.max_episodes,
+            "image_writer_threads": args.image_writer_threads,
+            "encoder_threads": args.encoder_threads,
+        }.items()
+        if value is not None
+    }
     values["show_progress"] = not args.no_progress
     if values:
         from dataclasses import replace

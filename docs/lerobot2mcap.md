@@ -139,7 +139,8 @@ lerobot2mcap download lerobot/pusht -j8
 - `dataset_id`: Hugging Face dataset ID (e.g., `lerobot/pusht`)
 - `-o, --output-dir`: Output directory for MCAP files (default: `./{dataset_name}_mcap`)
 - `-e, --episodes`: Specific episode indices to download (default: all episodes)
-- `-j, --jobs`: Cameras sliced and encoded concurrently within one episode (default: min(8, cpu_count // 2))
+- `-j, --jobs`: Cameras sliced and encoded concurrently within one episode
+  (default: min(8, available CPU count // 2), with a minimum of 1; `0` auto-detects)
 
 **Output:**
 
@@ -169,7 +170,8 @@ lerobot2mcap convert /path/to/dataset -o ./mcap_output -f ./my_converter_functio
 - `input_dir`: Path to LeRobot dataset root (must contain `meta/info.json`)
 - `-o, --output-dir`: Output directory for MCAP files (default: `<input_dir>/mcap_conversion`)
 - `-e, --episodes`: Specific episode indices to convert (default: all episodes)
-- `-j, --jobs`: Cameras sliced and encoded concurrently within one episode (default: min(8, cpu_count // 2))
+- `-j, --jobs`: Cameras sliced and encoded concurrently within one episode
+  (default: min(8, available CPU count // 2), with a minimum of 1; `0` auto-detects)
 - `-f, --converter-functions`: Path to custom converter functions YAML (default: built-in `configs/converter_functions.yaml`)
 
 **Performance (50 episodes, 16-core CPU):**

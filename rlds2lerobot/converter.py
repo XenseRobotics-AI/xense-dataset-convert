@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import copy
+import errno
+import inspect
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Protocol
 
 import numpy as np
+from xense_dataset_convert._lerobot_writer import writer_parallelism_kwargs
 
 from .config import ConverterConfig
 from .reader import episode_count, iter_episodes
@@ -107,10 +111,14 @@ class RldsToLeRobotConverter:
         self.split = split
         self.overwrite = overwrite
         self.episode_reader = episode_reader or iter_episodes
-        self.dataset_factory = dataset_factory or self._default_dataset_factory
+        self.dataset_factory = dataset_factory
 
     @staticmethod
-    def _default_dataset_factory(**kwargs: Any) -> DatasetWriter:
+    def _default_dataset_factory(
+        image_writer_threads: int = 0,
+        encoder_threads: int | None = None,
+        **kwargs: Any,
+    ) -> DatasetWriter:
         try:
             from lerobot.datasets.lerobot_dataset import LeRobotDataset
         except ImportError as error:
@@ -124,6 +132,14 @@ class RldsToLeRobotConverter:
             import inspect
             if "vcodec" in inspect.signature(LeRobotDataset.create).parameters:
                 kwargs["vcodec"] = requested_vcodec
+        kwargs.update(
+            writer_parallelism_kwargs(
+                LeRobotDataset,
+                kwargs["features"],
+                image_writer_threads,
+                encoder_threads,
+            )
+        )
         return LeRobotDataset.create(**kwargs)
 
     def convert(self) -> Path:
@@ -142,7 +158,7 @@ class RldsToLeRobotConverter:
         except StopIteration:
             raise ValueError("RLDS split contains no episodes") from None
         features = build_features(first, self.config)
-        dataset = self.dataset_factory(
+        factory_kwargs = dict(
             repo_id=self.output_root.name,
             root=self.output_root,
             fps=self.config.fps,
@@ -151,6 +167,14 @@ class RldsToLeRobotConverter:
             use_videos=any(spec["dtype"] == "video" for spec in features.values()),
             _requested_vcodec=self.config.vcodec,
         )
+        if self.dataset_factory is None:
+            dataset = self._default_dataset_factory(
+                **factory_kwargs,
+                image_writer_threads=self.config.image_writer_threads,
+                encoder_threads=self.config.encoder_threads,
+            )
+        else:
+            dataset = self.dataset_factory(**factory_kwargs)
         written = 0
         try:
             episode_total = episode_count(self.inputs, self.split)

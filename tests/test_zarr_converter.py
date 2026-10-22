@@ -90,3 +90,57 @@ def test_rejects_noncontiguous_episode_frames(tmp_path):
 
     with pytest.raises(ValueError, match="not contiguous"):
         LeRobotZarrConverter(dataset, tmp_path / "bad.zarr").convert()
+
+
+def test_parallel_feature_writes_match_serial_output(tmp_path):
+    rows = [
+        {
+            "action": np.array([index, index + 1], dtype=np.float32),
+            "observation.state": np.array([index], dtype=np.float64),
+            "observation.images.left": np.full((3, 12, 16), index, dtype=np.uint8),
+            "observation.images.right": np.full((3, 12, 16), 255 - index, dtype=np.uint8),
+            "episode_index": np.int64(0 if index < 3 else 1),
+            "task": "pick" if index < 3 else "place",
+        }
+        for index in range(6)
+    ]
+    metadata = {
+        "observation.images.left": {"dtype": "video"},
+        "observation.images.right": {"dtype": "video"},
+    }
+    outputs = []
+    for name, workers in (("serial", 1), ("parallel", 3)):
+        output = tmp_path / f"{name}.zarr"
+        LeRobotZarrConverter(
+            FakeDataset(rows), output, feature_metadata=metadata, workers=workers
+        ).convert()
+        outputs.append(zarr.open_group(output, mode="r"))
+
+    serial, parallel = outputs
+    for feature_path in (
+        "action",
+        "observation/state",
+        "observation/images/left",
+        "observation/images/right",
+        "episode_index",
+        "task",
+    ):
+        np.testing.assert_array_equal(
+            serial[f"data/{feature_path}"][:], parallel[f"data/{feature_path}"][:]
+        )
+    np.testing.assert_array_equal(serial["meta/episode_ends"][:], [3, 6])
+    np.testing.assert_array_equal(
+        serial["meta/episode_ends"][:], parallel["meta/episode_ends"][:]
+    )
+    np.testing.assert_array_equal(
+        serial["meta/episode_ids"][:], parallel["meta/episode_ids"][:]
+    )
+
+
+def test_rejects_negative_worker_count(tmp_path):
+    with pytest.raises(ValueError, match="workers"):
+        LeRobotZarrConverter(
+            FakeDataset([{"action": np.zeros(1)}]),
+            tmp_path / "bad.zarr",
+            workers=-1,
+        )

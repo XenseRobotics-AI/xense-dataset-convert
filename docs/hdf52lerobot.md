@@ -129,8 +129,9 @@ Useful flags: `--config` (rule file, default
   configuration it was written under, so resuming under different settings
   starts over rather than splicing two datasets together.
 - **Threads**: `--workers` sets how many cameras of one episode are encoded at
-  once; `--codec-threads` (default 1) sets how many threads run *inside* each
-  encoder and decoder. Left to FFmpeg (`0`), every instance sizes itself to the
+  once (0 selects half the CPUs available to the process);
+  `--codec-threads` (default 1) sets how many threads run *inside* each encoder
+  and decoder. Left to FFmpeg (`0`), every instance sizes itself to the
   whole machine, so a bulk run converting several datasets at once ends up many
   times oversubscribed — measured at 1100 threads on 32 cores, 390k context
   switches a second, and an episode taking 29.9 s against 19.4 s at `1`.

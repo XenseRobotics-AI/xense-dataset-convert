@@ -89,6 +89,13 @@ pip install -e .
 
 The dataset is written through lerobot's own `LeRobotDataset` API, which
 encodes video with PyAV; no `ffmpeg` binary is needed for this direction.
+LeRobot encodes multiple camera videos concurrently. When the installed LeRobot
+API exposes `encoder_threads`, the converter divides the CPUs available to this
+process across those camera encoders; set `--encoder-threads` to override the
+per-camera budget. Older LeRobot APIs keep their codec default. The optional
+`--image-writer-threads` enables background writes for temporary image frames
+and defaults to `0` (disabled), since LeRobot's queue can retain frames when
+storage is slower than the input.
 
 ## Usage
 
@@ -99,6 +106,13 @@ mcap2lerobot /path/to/XTacData \
   --output ./converted_dataset \
   --repo-id local/converted_dataset \
   --task "Pick up the blocks one by one and place them inside the box."
+```
+
+Set explicit per-camera encoder and image staging thread counts when needed:
+
+```bash
+mcap2lerobot /path/to/XTacData -o ./converted_dataset \
+  --encoder-threads 2 --image-writer-threads 8
 ```
 
 Convert selected files:

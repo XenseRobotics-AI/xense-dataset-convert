@@ -13,11 +13,21 @@ from .config_generator import ConfigGenerator
 from .dataset_info import DatasetInfo
 from .logger import get_logger
 from .sorted_mcap_converter import SortedMcapConverter
+from xense_dataset_convert._parallelism import available_cpu_count
 
 logger = get_logger("converter")
 
 # Display formatting constants
 SEPARATOR_WIDTH = 60
+
+
+def resolve_intra_workers(workers: int | None) -> int:
+    """Resolve an explicit or automatic per-episode camera worker count."""
+    if workers is None or workers == 0:
+        return max(1, min(8, available_cpu_count() // 2))
+    if workers < 0:
+        raise ValueError("intra_workers must be 0 (auto) or positive")
+    return workers
 
 
 class LeRobotConverter:
@@ -27,7 +37,7 @@ class LeRobotConverter:
         self,
         dataset_root: Path,
         converter_functions_path: Path,
-        intra_workers: int = 8,
+        intra_workers: int | None = None,
     ):
         """
         Initialize LeRobotConverter.
@@ -36,11 +46,12 @@ class LeRobotConverter:
             converter_functions_path: Path to converter_functions.yaml
             intra_workers: Number of threads to parallelise the per-camera work
                 inside a single episode (slice + re-encode). Episodes themselves
-                are processed sequentially.
+                are processed sequentially. ``None`` or ``0`` uses the CPU-aware
+                default; a positive value overrides it.
         """
         self.dataset_root = dataset_root
         self.converter_functions_path = converter_functions_path
-        self.intra_workers = max(1, intra_workers)
+        self.intra_workers = resolve_intra_workers(intra_workers)
 
         info_json_path = dataset_root / "meta" / "info.json"
         if not info_json_path.exists():

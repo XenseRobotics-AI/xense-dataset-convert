@@ -139,6 +139,7 @@ def test_lerobot_to_zarr_opens_the_dataset_from_a_path(monkeypatch, tmp_path):
         def __init__(self, dataset, output_path, **kwargs):
             opened["dataset"] = dataset
             opened["output_path"] = output_path
+            opened["kwargs"] = kwargs
 
         def convert(self, limit=None):
             opened["limit"] = limit
@@ -159,12 +160,18 @@ def test_lerobot_to_zarr_opens_the_dataset_from_a_path(monkeypatch, tmp_path):
     module.zarr_converter = sys.modules["lerobot2zarr.zarr_converter"]
 
     result = convert(
-        Format.LEROBOT, Format.ZARR, tmp_path, tmp_path / "out.zarr", limit=5
+        Format.LEROBOT,
+        Format.ZARR,
+        tmp_path,
+        tmp_path / "out.zarr",
+        limit=5,
+        workers=2,
     )
 
     assert opened["root"] == tmp_path
     assert opened["dataset"] == "opened-dataset"
     assert opened["limit"] == 5
+    assert opened["kwargs"]["workers"] == 2
     assert result.output_path == tmp_path / "out.zarr"
 
 
@@ -190,11 +197,23 @@ def test_mcap_to_lerobot_defaults_repo_id_to_the_output_name(monkeypatch, tmp_pa
     _install(monkeypatch, "mcap2lerobot.converter", McapToLeRobotConverter=FakeConverter)
 
     output = tmp_path / "converted_dataset"
-    convert(Format.MCAP, Format.LEROBOT, tmp_path / "episodes", output, fps=30)
+    convert(
+        Format.MCAP,
+        Format.LEROBOT,
+        tmp_path / "episodes",
+        output,
+        fps=30,
+        image_writer_threads=4,
+        encoder_threads=2,
+    )
 
     assert seen["repo_id"] == "converted_dataset"
     # Only what the caller set, so the dataclass defaults survive.
-    assert seen["config_kwargs"] == {"fps": 30}
+    assert seen["config_kwargs"] == {
+        "fps": 30,
+        "image_writer_threads": 4,
+        "encoder_threads": 2,
+    }
 
 
 def test_lerobot_targets_report_totals_from_the_written_metadata(monkeypatch, tmp_path):
@@ -374,6 +393,16 @@ def test_mcap_option_names_match_the_config_it_builds():
 
     fields = set(ConverterConfig.__dataclass_fields__)
     assert CONFIG_OPTIONS == fields, CONFIG_OPTIONS ^ fields
+
+
+def test_rlds_parallelism_options_are_accepted_by_the_facade():
+    from rlds2lerobot.config import ConverterConfig
+
+    from xense_dataset_convert.adapters.rlds_to_lerobot import ACCEPTED_OPTIONS
+
+    fields = set(ConverterConfig.__dataclass_fields__)
+    assert {"image_writer_threads", "encoder_threads"} <= ACCEPTED_OPTIONS
+    assert {"image_writer_threads", "encoder_threads"} <= fields
 
 
 def test_lerobot2mcap_looks_up_the_distribution_by_its_real_name():

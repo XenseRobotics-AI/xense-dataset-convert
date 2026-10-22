@@ -9,7 +9,7 @@ from ..types import ConvertResult, Format
 from ._support import single_input
 
 ACCEPTED_OPTIONS = frozenset(
-    {"repo_id", "episodes", "feature_metadata", "source", "chunk_bytes", "limit"}
+    {"repo_id", "episodes", "feature_metadata", "source", "chunk_bytes", "limit", "workers"}
 )
 
 
@@ -35,6 +35,7 @@ def convert(inputs: list[Path], output: Path, options: dict[str, Any]) -> Conver
         feature_metadata=options.get("feature_metadata"),
         source=options.get("source"),
         **({"chunk_bytes": options["chunk_bytes"]} if "chunk_bytes" in options else {}),
+        **({"workers": options["workers"]} if "workers" in options else {}),
     )
     written = converter.convert(limit=options.get("limit"))
 

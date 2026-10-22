@@ -69,6 +69,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.5,
         help="Maximum nearest-neighbor timestamp gap in frame periods",
     )
+    parser.add_argument(
+        "--image-writer-threads",
+        type=int,
+        default=0,
+        help="Background image staging threads (0 disables; may increase memory use)",
+    )
+    parser.add_argument(
+        "--encoder-threads",
+        type=int,
+        default=None,
+        help="Threads per camera video encoder (default: auto budget across cameras)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
@@ -90,6 +102,8 @@ def main() -> int:
         max_sync_gap_frames=args.max_sync_gap_frames,
         task=args.task,
         robot_type=args.robot_type,
+        image_writer_threads=args.image_writer_threads,
+        encoder_threads=args.encoder_threads,
     )
     converter = McapToLeRobotConverter(
         inputs=[Path(value) for value in args.inputs],

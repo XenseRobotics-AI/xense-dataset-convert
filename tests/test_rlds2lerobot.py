@@ -4,6 +4,7 @@ import numpy as np
 
 from rlds2lerobot.config import ConverterConfig
 from rlds2lerobot.converter import RldsToLeRobotConverter, build_features
+from xense_dataset_convert._lerobot_writer import writer_parallelism_kwargs
 
 
 def episode(length: int = 2) -> dict:
@@ -75,3 +76,31 @@ def test_missing_configured_image_is_allowed():
     features = build_features(data, config)
     assert "observation.images.exterior_image_1_left" in features
     assert "observation.images.missing" not in features
+
+
+def test_video_encoder_threads_can_be_overridden(monkeypatch):
+    class Dataset:
+        @classmethod
+        def create(cls, image_writer_threads=0, encoder_threads=None):
+            pass
+
+    monkeypatch.setattr("xense_dataset_convert._lerobot_writer.available_cpu_count", lambda: 16)
+    features = {
+        "observation.images.left": {"dtype": "video"},
+        "observation.images.right": {"dtype": "video"},
+    }
+
+    assert writer_parallelism_kwargs(Dataset, features, 3, None) == {
+        "image_writer_threads": 3,
+        "encoder_threads": 8,
+    }
+    assert writer_parallelism_kwargs(Dataset, features, 3, 2)["encoder_threads"] == 2
+
+
+def test_parallelism_config_rejects_invalid_thread_counts():
+    import pytest
+
+    with pytest.raises(ValueError, match="image_writer_threads"):
+        ConverterConfig(image_writer_threads=-1)
+    with pytest.raises(ValueError, match="encoder_threads"):
+        ConverterConfig(encoder_threads=0)

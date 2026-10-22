@@ -41,6 +41,8 @@ class ConverterConfig:
     max_sync_gap_frames: float = 1.5
     task: str | None = None
     robot_type: str | None = None
+    image_writer_threads: int = 0
+    encoder_threads: int | None = None
 
     def __post_init__(self) -> None:
         if self.dialect not in DIALECTS:
@@ -56,6 +58,10 @@ class ConverterConfig:
             raise ValueError("fps must be greater than zero")
         if self.max_sync_gap_frames <= 0:
             raise ValueError("max_sync_gap_frames must be greater than zero")
+        if self.image_writer_threads < 0:
+            raise ValueError("image_writer_threads must not be negative")
+        if self.encoder_threads is not None and self.encoder_threads <= 0:
+            raise ValueError("encoder_threads must be greater than zero")
 
     def video_feature_name(self, topic: str) -> str | None:
         normalized = normalize_topic(topic)

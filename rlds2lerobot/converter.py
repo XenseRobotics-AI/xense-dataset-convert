@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import errno
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Protocol
@@ -174,8 +176,23 @@ class RldsToLeRobotConverter:
                 except Exception:
                     pass
             raise
+        self._remove_empty_image_dirs()
         logger.info("Converted %d episode(s) to %s", written, self.output_root)
         return self.output_root
+
+    def _remove_empty_image_dirs(self) -> None:
+        """Remove LeRobot's unused image directories without touching files."""
+        image_root = self.output_root / "images"
+        if not image_root.is_dir() or image_root.is_symlink():
+            return
+
+        for directory, _, _ in os.walk(image_root, topdown=False, followlinks=False):
+            path = Path(directory)
+            try:
+                path.rmdir()
+            except OSError as error:
+                if error.errno not in (errno.ENOTEMPTY, errno.EEXIST, errno.ENOENT):
+                    logger.warning("Could not remove empty image directory %s: %s", path, error)
 
     def _limited(self, first: dict[str, Any], rest: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
         count = 0

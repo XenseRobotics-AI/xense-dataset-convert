@@ -90,7 +90,7 @@ def test_reference_camera_timestamps_is_refused():
 
 
 def _write_train_mcap(path: Path, *, timing="fixed_rate_grid", started_ms=1792602557684, episode_id="EP-1",
-                      task_name="t", rows=3, omit=(), tcp=None):
+                      task_name="t", rows=3, omit=(), tcp=None, mount=None):
     from mcap.writer import Writer
 
     names = [f"d{i}" for i in range(2)]
@@ -109,6 +109,8 @@ def _write_train_mcap(path: Path, *, timing="fixed_rate_grid", started_ms=179260
                  "dimension_names": ",".join(names), "robot_type": "xtac_umi_g1"}
         if tcp is not None:
             train["tcp_frame_convention"] = tcp
+        if mount is not None:
+            train["headset_mount"] = mount
         writer.add_metadata("xense_train_mcap", train)
         writer.add_metadata("episode", {"episode_id": episode_id, "started_at_ms": str(started_ms),
                                         "capture_mode": "dual_claw_head", "task_name": task_name, "prompt": "p"})
@@ -219,3 +221,23 @@ def test_tactile_recipes_from_older_mcaps_are_dropped_but_wrist_passes_through()
     e.channel_metadata = {}
     assert X._rectify([e], "observation.images.left_tactile_left") is None
     assert X._rectify([e], "observation.images.left_wrist") == ("fisheye", {"k": 2})
+
+
+@pytest.mark.parametrize("mount", [None, "head", "neck"])
+def test_headset_mount_is_passed_through_after_tcp_frame_convention(tmp_path, mount):
+    X.pack([_write_train_mcap(tmp_path / "a.train.mcap", tcp="mirrored-v1", mount=mount)], tmp_path / "out")
+    info = json.loads((tmp_path / "out/meta/info.json").read_text())
+    keys = list(info)
+    if mount is None:
+        assert "headset_mount" not in keys                   # pre-35e46e8 MCAPs: no claim made
+    else:
+        assert keys[keys.index("tcp_frame_convention") + 1] == "headset_mount"
+        assert info["headset_mount"] == mount
+
+
+def test_inputs_with_different_headset_mounts_are_refused(tmp_path):
+    a = X.read_train_mcap(_write_train_mcap(tmp_path / "a.train.mcap", episode_id="EP-A", mount="head"))
+    b = X.read_train_mcap(_write_train_mcap(tmp_path / "b.train.mcap", episode_id="EP-B", started_ms=1792602600000,
+                                            mount="neck"))
+    with pytest.raises(X.TrainMcapError, match="headset_mount"):
+        X.order_episodes([a, b])

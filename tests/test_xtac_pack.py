@@ -208,3 +208,14 @@ def test_inputs_with_different_tcp_conventions_are_refused(tmp_path):
     b = X.read_train_mcap(_write_train_mcap(tmp_path / "b.train.mcap", episode_id="EP-B", started_ms=1792602600000))
     with pytest.raises(X.TrainMcapError, match="tcp_frame_convention"):
         X.order_episodes([a, b])
+
+
+def test_tactile_recipes_from_older_mcaps_are_dropped_but_wrist_passes_through():
+    e = X.TrainEpisode.__new__(X.TrainEpisode)      # only the two fields _rectify reads
+    e.calibration = {
+        "/camera/left/tactile_1/h264": {"rectified": True, "rectify_kind": "tactile", "rectify_config": {"g": 1}},
+        "/camera/left/fisheye/h264": {"rectified": True, "rectify_kind": "fisheye", "rectify_config": {"k": 2}},
+    }
+    e.channel_metadata = {}
+    assert X._rectify([e], "observation.images.left_tactile_left") is None
+    assert X._rectify([e], "observation.images.left_wrist") == ("fisheye", {"k": 2})

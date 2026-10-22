@@ -57,9 +57,6 @@ XTAC_VIDEO_TOPICS: dict[str, str] = {
     "camera/right/tactile_1/h264": "observation.images.right_tactile_left",
     "camera/right/tactile_2/h264": "observation.images.right_tactile_right",
 }
-# Same source topic -> its role/side, for reading xumi.camera_calibration.v1
-# (keyed by the leading-slash topic) back onto the feature.
-XTAC_CAMERA_CALIBRATION_TOPICS = {"/" + topic: feature for topic, feature in XTAC_VIDEO_TOPICS.items()}
 
 XTAC_STATE_TOPIC = "train/state"
 XTAC_ACTION_TOPIC = "train/action"
@@ -439,8 +436,9 @@ def write_xtac_metadata(
 
     Reproduces the reference dataset's provenance files from each episode's
     ``episode`` MCAP metadata record, in episode order: ``hardware.json``,
-    ``xumi_collection_devices.json``, ``taccap_extrinsics.json`` and the
-    per-camera ``taccap.rectify_config`` merged into ``meta/info.json``. Skips
+    ``xumi_collection_devices.json`` and ``taccap_extrinsics.json``. Tactile rectify
+    recipes are no longer written into ``meta/info.json`` (core 9c476e0); this path
+    never wrote wrist / head calibration, so nothing else changes. Skips
     silently if the records are absent (e.g. a hand-written MCAP).
     """
     parsed = [_parse_episode_record(record) for record in episode_metadata]
@@ -451,7 +449,6 @@ def write_xtac_metadata(
     _dump_json(meta / "hardware.json", {"robot_type": robot_type, "epochs": []})
     _write_collection_devices(meta, parsed)
     _write_taccap_extrinsics(meta, parsed)
-    _inject_rectify_config(meta, parsed)
 
 
 def _parse_episode_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -467,7 +464,6 @@ def _parse_episode_record(record: dict[str, Any] | None) -> dict[str, Any] | Non
         "right": float(right) if right is not None else None,
     }
     parsed["collection_devices"] = _load_json_field(episode.get("xumi.collection_devices.v1"))
-    parsed["camera_calibration"] = _load_json_field(episode.get("xumi.camera_calibration.v1"))
     # The tracker->EE extrinsic and pose_stage come from the /pico/pose channel
     # metadata, captured alongside the file's metadata records.
     pico = (record or {}).get("pico_channel") or {}
@@ -523,34 +519,6 @@ def _write_taccap_extrinsics(meta: Path, parsed: list[dict[str, Any] | None]) ->
             }
         )
     _dump_json(meta / "taccap_extrinsics.json", compact_taccap_extrinsics(episodes))   # v4
-
-
-def _inject_rectify_config(meta: Path, parsed: list[dict[str, Any] | None]) -> None:
-    """Merge each tactile camera's ``taccap.rectify_config`` into ``info.json``.
-
-    ``info.json`` is dataset-global with one block per camera, so the first
-    episode's calibration is used (``base_grid`` varies slightly per episode).
-    """
-    calibration = next(
-        (entry["camera_calibration"] for entry in parsed if entry and entry.get("camera_calibration")),
-        None,
-    )
-    info_path = meta / "info.json"
-    if not calibration or not info_path.exists():
-        return
-    cameras = calibration.get("cameras") or {}
-    info = json.loads(info_path.read_text())
-    features = info.get("features") or {}
-    for topic, feature_name in XTAC_CAMERA_CALIBRATION_TOPICS.items():
-        camera = cameras.get(topic)
-        feature = features.get(feature_name)
-        if not camera or not feature or camera.get("rectify_kind") != "tactile":
-            continue
-        block = feature.setdefault("info", {})
-        block["taccap.rectified"] = bool(camera.get("rectified", True))
-        block["taccap.rectify_kind"] = camera.get("rectify_kind")
-        block["taccap.rectify_config"] = camera.get("rectify_config")
-    _dump_json(info_path, info)
 
 
 def _load_json_field(value: Any) -> Any:

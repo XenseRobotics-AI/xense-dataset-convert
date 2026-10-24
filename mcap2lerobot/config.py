@@ -24,10 +24,10 @@ class ConverterConfig:
     """Settings for MCAP files produced by this repository's ``lerobot2mcap``.
 
     ``fps``, ``task`` and ``robot_type`` are overrides. Left at ``None``, the
-    values lerobot2mcap embedded in the MCAP (the source dataset's
-    ``meta/info.json`` and the episode's task texts) are used; only an MCAP that
-    carries none falls back to the module defaults, with ``fps`` then inferred
-    from the state timestamps.
+    values embedded in the MCAP are used; for XTac, task text falls back from
+    ``prompt`` to ``task_name`` to ``task_id``. Only an MCAP that carries none
+    falls back to the module defaults, with ``fps`` then inferred from the state
+    timestamps.
     """
 
     dialect: str = DIALECT_XTAC

@@ -320,7 +320,16 @@ class XTacMcapReader:
             info["fps"] = fps
         episode.info = info
 
-        task = self.config.task or source_episode.get("task_id") or None
+        # LeRobot's standard tasks.parquet stores task text, not separate
+        # task_id/task_name/prompt columns. Use the human-readable prompt as
+        # that task text; preserve the source identifiers in task_metadata.json.
+        task = (
+            self.config.task
+            or source_episode.get("prompt")
+            or source_episode.get("task_name")
+            or source_episode.get("task_id")
+            or None
+        )
         if task:
             episode.episode_meta = {"tasks": [task], "task_index_to_task": {"0": task}}
 
@@ -438,15 +447,17 @@ def write_xtac_metadata(
 
     Reproduces the reference dataset's provenance files from each episode's
     ``episode`` MCAP metadata record, in episode order: ``hardware.json``,
-    ``xumi_collection_devices.json``, ``taccap_extrinsics.json`` and the
-    per-camera ``taccap.rectify_config`` merged into ``meta/info.json``. Skips
-    silently if the records are absent (e.g. a hand-written MCAP).
+    ``xumi_collection_devices.json``, ``taccap_extrinsics.json``,
+    ``task_metadata.json`` and the per-camera ``taccap.rectify_config`` merged
+    into ``meta/info.json``. Skips silently if the records are absent (e.g. a
+    hand-written MCAP).
     """
     parsed = [_parse_episode_record(record) for record in episode_metadata]
     if not any(parsed):
         return
     meta = Path(output_root) / "meta"
 
+    _write_task_metadata(meta, parsed)
     _dump_json(meta / "hardware.json", {"robot_type": robot_type, "epochs": []})
     _write_collection_devices(meta, parsed)
     _write_taccap_extrinsics(meta, parsed)
@@ -458,7 +469,12 @@ def _parse_episode_record(record: dict[str, Any] | None) -> dict[str, Any] | Non
     episode = (record or {}).get(EPISODE_METADATA)
     if not episode:
         return None
-    parsed: dict[str, Any] = {"episode_id": episode.get("episode_id")}
+    parsed: dict[str, Any] = {
+        "episode_id": episode.get("episode_id"),
+        "task_id": episode.get("task_id"),
+        "task_name": episode.get("task_name"),
+        "prompt": episode.get("prompt"),
+    }
     left = episode.get("left_gripper_open_rad")
     right = episode.get("right_gripper_open_rad")
     parsed["gripper_open_rad"] = {
@@ -474,6 +490,26 @@ def _parse_episode_record(record: dict[str, Any] | None) -> dict[str, Any] | Non
     tracker_to_ee = pico.get("tracker_to_ee")
     parsed["tracker_to_ee"] = json.loads(tracker_to_ee) if isinstance(tracker_to_ee, str) else None
     return parsed
+
+
+def _write_task_metadata(meta: Path, parsed: list[dict[str, Any] | None]) -> None:
+    """Persist source task identifiers and text for each converted episode."""
+    _dump_json(
+        meta / "task_metadata.json",
+        {
+            "version": 1,
+            "episodes": [
+                {
+                    "episode_index": index,
+                    "source_episode_id": (entry or {}).get("episode_id"),
+                    "task_id": (entry or {}).get("task_id"),
+                    "task_name": (entry or {}).get("task_name"),
+                    "prompt": (entry or {}).get("prompt"),
+                }
+                for index, entry in enumerate(parsed)
+            ],
+        },
+    )
 
 
 def _write_collection_devices(meta: Path, parsed: list[dict[str, Any] | None]) -> None:

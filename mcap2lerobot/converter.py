@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import json
 import logging
 import math
 import re
@@ -276,6 +277,34 @@ def source_video_codec(episode: EpisodeData) -> str | None:
     return None
 
 
+def _write_task_metadata(
+    output_root: Path, manifests: Sequence[dict[str, Any] | None]
+) -> None:
+    """Restore optional source task identities carried in episode attachments."""
+    if not any(
+        manifest and any(manifest.get(key) is not None for key in ("task_id", "task_name", "prompt"))
+        for manifest in manifests
+    ):
+        return
+    path = Path(output_root) / "meta" / "task_metadata.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "episodes": [
+            {
+                "episode_index": index,
+                "source_episode_id": (manifest or {}).get("source_episode_id")
+                or (manifest or {}).get("episode_id"),
+                "task_id": (manifest or {}).get("task_id"),
+                "task_name": (manifest or {}).get("task_name"),
+                "prompt": (manifest or {}).get("prompt"),
+            }
+            for index, manifest in enumerate(manifests)
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def frame_task(config: ConverterConfig, episode: EpisodeData, state: TimedArray) -> str:
     """Task text for one frame: override, else the row's own task, else default."""
     if config.task:
@@ -412,12 +441,14 @@ class McapToLeRobotConverter:
             dataset = self.dataset_factory(**factory_kwargs)
 
         source_metadata: list[dict[str, Any] | None] = [first_episode.source_metadata]
+        task_manifests: list[dict[str, Any] | None] = [first_episode.episode_meta]
         try:
             self._write_episode(dataset, first_episode, features, fps, first_plan)
             for mcap_path in mcap_files[1:]:
                 episode = self.reader.read(mcap_path)
                 self._write_episode(dataset, episode, features, fps)
                 source_metadata.append(episode.source_metadata)
+                task_manifests.append(episode.episode_meta)
             dataset.finalize()
         except Exception:
             finalize = getattr(dataset, "finalize", None)
@@ -427,14 +458,18 @@ class McapToLeRobotConverter:
                 except Exception:
                     pass
             raise
-        self._write_dialect_metadata(source_metadata, robot_type)
+        self._write_dialect_metadata(source_metadata, task_manifests, robot_type)
         return self.output_root
 
     def _write_dialect_metadata(
-        self, source_metadata: list[dict[str, Any] | None], robot_type: str
+        self,
+        source_metadata: list[dict[str, Any] | None],
+        task_manifests: list[dict[str, Any] | None],
+        robot_type: str,
     ) -> None:
-        """Write the XTac provenance files the LeRobot writer does not produce."""
+        """Write source task identities plus any XTac provenance LeRobot omits."""
         if self.config.dialect != DIALECT_XTAC:
+            _write_task_metadata(self.output_root, task_manifests)
             return
         from .xtac import write_xtac_metadata
 

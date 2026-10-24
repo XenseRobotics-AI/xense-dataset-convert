@@ -41,8 +41,13 @@ tactile cameras' `taccap.rectify_config` merged into `meta/info.json`. The
 `tracker_to_ee` transform is left null: the recorded poses are already the
 end-effector (TCP).
 
-The task text has no human-readable default in the source (only a `task_id`), so
-pass `--task` for a real instruction.
+LeRobot's standard `meta/tasks.parquet` stores the task text as its index and
+`task_index` as the frame reference. For XTac recordings, the source `prompt`
+is used as that task text (then `task_name`, then `task_id` as fallbacks), so
+the instruction is available through the normal LeRobot task interface.
+`meta/task_metadata.json` preserves each source episode's `task_id`,
+`task_name`, and `prompt` alongside its output episode index. `--task` overrides
+the LeRobot task text without dropping those source fields.
 
 ## `lerobot_roundtrip` dialect
 

@@ -45,8 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Task text for every frame. Default: the source's own task "
-            f"(the embedded tasks for {DIALECT_LEROBOT_ROUNDTRIP!r}, the task_id for "
-            f"{DIALECT_XTAC!r}), else {DEFAULT_TASK!r}"
+            f"(the embedded tasks for {DIALECT_LEROBOT_ROUNDTRIP!r}; for "
+            f"{DIALECT_XTAC!r}, prompt, task_name, then task_id), else {DEFAULT_TASK!r}"
         ),
     )
     parser.add_argument(

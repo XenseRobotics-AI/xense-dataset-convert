@@ -83,7 +83,12 @@ def _episode_with_metadata(task: str | None = None) -> tuple[XTacMcapReader, Epi
     episode.extra_vectors = {TRACKER_CONFIDENCE_FEATURE: [TimedArray(0, np.ones(2, dtype=np.float32))]}
     records = {
         "xense_train_mcap": {"dimension_names": names, "fps": "30", "state_dim": "29"},
-        "episode": {"task_id": "TASK-1", "episode_id": "EP-1"},
+        "episode": {
+            "task_id": "TASK-1",
+            "task_name": "test task",
+            "prompt": "Move the object to the marked location.",
+            "episode_id": "EP-1",
+        },
     }
     reader = XTacMcapReader(ConverterConfig(task=task))
     reader._synthesize_metadata(episode, records)
@@ -99,8 +104,9 @@ def test_synthesize_metadata_builds_info_and_episode_meta():
     assert state["names"][0] == "d0" and state["names"][-1] == "d28"
     assert episode.info["features"][HEAD]["info"]["video.codec"] == "h264"
     assert TRACKER_CONFIDENCE_FEATURE in episode.info["features"]
-    # task falls back to the source task_id when not overridden
-    assert episode.episode_meta["tasks"] == ["TASK-1"]
+    # The prompt becomes LeRobot's standard task text; source IDs are preserved
+    # separately in task_metadata.json.
+    assert episode.episode_meta["tasks"] == ["Move the object to the marked location."]
 
 
 def test_synthesize_metadata_warns_when_dimension_names_do_not_fit(caplog):
@@ -219,6 +225,9 @@ def _episode_record(episode_id: str, missing: list[str] | None = None, extrinsic
     record: dict = {
         "episode": {
             "episode_id": episode_id,
+            "task_id": "TASK-TEST",
+            "task_name": "test task",
+            "prompt": "Move the object to the marked location.",
             "left_gripper_open_rad": "1.10",
             "right_gripper_open_rad": "1.20",
             "xumi.collection_devices.v1": json.dumps(devices),
@@ -241,6 +250,25 @@ def test_write_xtac_metadata_produces_the_provenance_files(tmp_path):
 
     records = [_episode_record("EP-A"), _episode_record("EP-B", missing=["cameras"])]
     write_xtac_metadata(tmp_path, records, robot_type="xtac_umi_g1")
+
+    task_metadata = json.loads((meta / "task_metadata.json").read_text())
+    assert task_metadata["version"] == 1
+    assert task_metadata["episodes"] == [
+        {
+            "episode_index": 0,
+            "source_episode_id": "EP-A",
+            "task_id": "TASK-TEST",
+            "task_name": "test task",
+            "prompt": "Move the object to the marked location.",
+        },
+        {
+            "episode_index": 1,
+            "source_episode_id": "EP-B",
+            "task_id": "TASK-TEST",
+            "task_name": "test task",
+            "prompt": "Move the object to the marked location.",
+        },
+    ]
 
     hardware = json.loads((meta / "hardware.json").read_text())
     assert hardware == {"robot_type": "xtac_umi_g1", "epochs": []}

@@ -56,6 +56,7 @@ class DatasetInfo:
         # Load episodes metadata for v3.0 datasets
         self._episodes_df: pd.DataFrame | None = None
         self._tasks: dict[int, str] = {}
+        self._task_metadata: dict[int, dict] = self._load_task_metadata()
         if self.is_v3_format():
             self._load_episodes_metadata()
             self._tasks = self._load_tasks()
@@ -165,6 +166,23 @@ class DatasetInfo:
             return {}
         return {int(index): str(task) for task, index in frame["task_index"].items()}
 
+    def _load_task_metadata(self) -> dict[int, dict]:
+        """Load optional XTac task identity fields keyed by episode index."""
+        path = self.dataset_root / "meta" / "task_metadata.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            episodes = payload.get("episodes", [])
+            return {
+                int(entry["episode_index"]): entry
+                for entry in episodes
+                if isinstance(entry, dict) and entry.get("episode_index") is not None
+            }
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+            logger.warn(f"Failed to load task metadata from {path}: {error}")
+            return {}
+
     def _episode_row(self, episode_index: int) -> pd.Series:
         if self._episodes_df is None:
             raise ValueError(
@@ -196,7 +214,7 @@ class DatasetInfo:
         mapping = {str(index): task for index, task in self._tasks.items() if task in tasks}
         if not mapping:
             mapping = {str(index): task for index, task in self._tasks.items()}
-        return {
+        manifest = {
             "format": "lerobot2mcap/episode",
             "format_version": 1,
             "episode_index": int(row["episode_index"]),
@@ -204,6 +222,17 @@ class DatasetInfo:
             "tasks": tasks,
             "task_index_to_task": mapping,
         }
+        # Standard LeRobot task tables store only text. Preserve XTac's source
+        # identifiers in the attachment so the MCAP -> LeRobot leg can restore
+        # the optional task_metadata.json sidecar.
+        manifest.update(
+            {
+                key: value
+                for key, value in self._task_metadata.get(episode_index, {}).items()
+                if key in ("source_episode_id", "task_id", "task_name", "prompt")
+            }
+        )
+        return manifest
 
     def get_episode_info(self, episode_index: int) -> dict:
         """
